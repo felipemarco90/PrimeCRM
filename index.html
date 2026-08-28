@@ -5033,6 +5033,14 @@ async function desfazerPromocaoMes(){
       if (error) throw new Error('Erro ao devolver pro Futuro: ' + error.message);
     }
 
+    // Cancelamento só existe como conceito pra agenda VIGENTE — se o mês
+    // deixou de ser Vigente (foi despromovido), os cancelamentos daquele
+    // mês não representam mais nada válido. Sem essa limpeza, eles ficavam
+    // presos no banco e faziam o mês continuar aparecendo no seletor do
+    // Cronograma Vigente mesmo depois de desfazer.
+    const { error: cancDelErr } = await sb.from('crm_cancelamentos').delete().eq('mes', promocao.mesPromovido).eq('ano', promocao.anoPromovido);
+    if (cancDelErr) toast('Revertido, mas houve erro ao limpar os cancelamentos desse mês: ' + cancDelErr.message, 'err');
+
     const { error: cfgErr } = await sb.from('crm_config')
       .update({ mes_referencia: promocao.mesReferenciaAnterior, ano_referencia: promocao.anoReferenciaAnterior, atualizado_por: state.authUser.id })
       .eq('id', 1);
@@ -5044,7 +5052,7 @@ async function desfazerPromocaoMes(){
       .eq('id', promocao.id);
     if (markErr) toast('Revertido, mas houve erro ao marcar o histórico: ' + markErr.message, 'err');
 
-    await Promise.all([loadAgendaVigente(), loadAgendaFutura(), loadPromocoesMes()]);
+    await Promise.all([loadAgendaVigente(), loadAgendaFutura(), loadCancelamentos(), loadPromocoesMes()]);
     state.vigenteMesSelecionado = null;
     toast(`Promoção de ${labelPromovido} desfeita — ${promocao.linhasOriginais.length} registro(s) de volta pro Futuro. Mês de referência voltou pra ${labelAnterior}.`);
   } catch(err){
