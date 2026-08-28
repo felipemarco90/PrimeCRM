@@ -536,6 +536,7 @@ let CANCELAMENTOS = [];
 let AGENDA_FUTURA = [];
 let FERIAS = [];
 let FERIADOS = [];
+let AGENDA_FUTURA_EXCLUIDAS = [];
 let CONFIG = { mesReferencia: null, anoReferencia: null };
 let PROMOCOES_MES = [];
 let KANBAN_CARDS = [];
@@ -756,6 +757,16 @@ async function loadFeriados(){
   if(error) throw error;
   FERIADOS = data.map(mapFeriadoRow);
 }
+// "Lembrança" de datas que foram excluídas do Cronograma Futuro (vindas do
+// Setup) — usado pra reimportação do Setup não recriar o que já foi
+// deliberadamente tirado por alguém.
+async function loadAgendaFuturaExcluidas(){
+  const { data, error } = await sb.from('crm_agenda_futura_excluidas').select('*');
+  if(error) throw error;
+  AGENDA_FUTURA_EXCLUIDAS = data.map(row => ({
+    analistaId: row.analista_id, clienteId: row.cliente_id, data: row.data, periodo: row.periodo,
+  }));
+}
 // Mês/ano que o sistema considera "vigente" — desacoplado do calendário
 // real, avança manualmente via "promoverMesParaVigente".
 async function loadConfig(){
@@ -803,7 +814,7 @@ async function loadUserSkills(){
 }
 async function loadAll(){
   await loadUsers();     // usuários primeiro: mapClientRow usa USERS p/ casar nome do GDR
-  await Promise.all([loadClients(), loadAgendas(), loadAcordos(), loadSkills(), loadTickets(), loadRecorrencia(), loadAgendaVigente(), loadCancelamentos(), loadAgendaFutura(), loadFerias(), loadFeriados(), loadConfig(), loadPromocoesMes(), loadKanban()]);
+  await Promise.all([loadClients(), loadAgendas(), loadAcordos(), loadSkills(), loadTickets(), loadRecorrencia(), loadAgendaVigente(), loadCancelamentos(), loadAgendaFutura(), loadFerias(), loadFeriados(), loadConfig(), loadPromocoesMes(), loadKanban(), loadAgendaFuturaExcluidas()]);
   await loadUserSkills(); // depende de SKILLS já carregado
 }
 
@@ -4903,6 +4914,26 @@ async function promoverMesParaVigente(){
   if(!podeEditarVigente(state.authUser.role)){ toast('Só o RMO pode promover o mês.', 'err'); return; }
   const proximo = proximosMesesFuturo(1)[0];
   const rows = AGENDA_FUTURA.filter(a => a.mes===proximo.mes && a.ano===proximo.ano);
+
+  // Antes de promover, confere se tem conflito de horário (mesma lógica já
+  // usada na tela do Cronograma Futuro) — promover pro Vigente com
+  // conflito significaria levar o problema pra agenda "100% confirmada",
+  // que é justamente o que não pode acontecer.
+  const idsConflitantes = computeConflitosFuturo(rows);
+  if (idsConflitantes.size > 0){
+    const linhasConflitantes = rows.filter(r => idsConflitantes.has(r.id));
+    const porAnalistaData = {};
+    for (const r of linhasConflitantes){
+      const nome = r.analistaId ? (userById(r.analistaId)?.name || r.analistaNomePlanilha) : r.analistaNomePlanilha;
+      const chave = `${nome} — ${fmtDate(r.data)}`;
+      (porAnalistaData[chave] = porAnalistaData[chave] || []).push(`${r.periodo} (${r.clienteId?clientById(r.clienteId)?.nome:r.clienteNomePlanilha})`);
+    }
+    const detalhes = Object.entries(porAnalistaData).map(([chave, periodos]) => `• ${chave}: ${periodos.join(' + ')}`).join('\n');
+    toast(`Não dá pra promover ${proximo.label} — tem ${Object.keys(porAnalistaData).length} conflito(s) de horário no Cronograma Futuro. Corrija antes de promover.`, 'err');
+    alert(`⚠️ Conflito de horário encontrado em ${proximo.label} — corrija no Cronograma Futuro antes de promover:\n\n${detalhes}`);
+    return;
+  }
+
   if(!confirm(`Promover ${proximo.label} pro Cronograma Vigente?\n\n${rows.length} registro(s) do Futuro serão movidos pro Vigente. O mês de referência do sistema vai virar ${proximo.label} — Setup e Futuro passam a considerar só os meses seguintes.\n\nSe promover errado, dá pra desfazer depois (o botão "Desfazer última promoção" aparece aqui mesmo).`)) return;
 
   const mesReferenciaAnterior = CONFIG.mesReferencia, anoReferenciaAnterior = CONFIG.anoReferencia;
@@ -4986,8 +5017,15 @@ async function desfazerPromocaoMes(){
 
   state.desfazendoPromocao = true; render();
   try{
-    const { error: delErr } = await sb.from('crm_agenda_vigente').delete().in('id', promocao.idsVigenteCriados);
-    if (delErr) throw new Error('Erro ao remover do Vigente: ' + delErr.message);
+    // Exclui em lotes pequenos — DELETE com .in() bota a lista de ids na
+    // própria URL da requisição, e uma promoção grande (centenas de
+    // registros) gera uma URL longa demais e o servidor recusa com 400.
+    const CHUNK_DEL = 100;
+    for (let i=0; i<promocao.idsVigenteCriados.length; i+=CHUNK_DEL){
+      const lote = promocao.idsVigenteCriados.slice(i, i+CHUNK_DEL);
+      const { error: delErr } = await sb.from('crm_agenda_vigente').delete().in('id', lote);
+      if (delErr) throw new Error('Erro ao remover do Vigente: ' + delErr.message);
+    }
 
     const CHUNK = 300;
     for (let i=0; i<promocao.linhasOriginais.length; i+=CHUNK){
@@ -5412,6 +5450,12 @@ async function materializarSetupParaFuturo(){
     }
     if (rows.length === 0) throw new Error('O Setup Mensal está vazio — não há nada pra projetar.');
 
+    // Não recria datas que alguém já excluiu deliberadamente antes.
+    const chaveExclusao = e => `${e.analistaId}|${e.clienteId}|${e.data}|${e.periodo||''}`;
+    const excluidas = new Set(AGENDA_FUTURA_EXCLUIDAS.map(chaveExclusao));
+    const rowsFiltradas = rows.filter(r => !excluidas.has(chaveExclusao({ analistaId: r.analista_id, clienteId: r.cliente_id, data: r.data, periodo: r.periodo })));
+    const qtdRespeitadas = rows.length - rowsFiltradas.length;
+
     // Só substitui as linhas de origem "setup" desses 3 meses — não mexe em
     // agendas que já vieram de ticket ou foram criadas manualmente aqui.
     setImportStatus('futuro', FUTURO_IMPORT_ETAPAS[1]);
@@ -5421,14 +5465,14 @@ async function materializarSetupParaFuturo(){
     }
 
     const CHUNK = 300;
-    for (let i=0; i<rows.length; i+=CHUNK){
-      setImportStatus('futuro', FUTURO_IMPORT_ETAPAS[2], Math.min(i+CHUNK, rows.length), rows.length);
-      const { error } = await sb.from('crm_agenda_futura').insert(rows.slice(i, i+CHUNK));
+    for (let i=0; i<rowsFiltradas.length; i+=CHUNK){
+      setImportStatus('futuro', FUTURO_IMPORT_ETAPAS[2], Math.min(i+CHUNK, rowsFiltradas.length), rowsFiltradas.length);
+      const { error } = await sb.from('crm_agenda_futura').insert(rowsFiltradas.slice(i, i+CHUNK));
       if (error) throw new Error('Erro ao gravar: ' + error.message);
     }
 
     await loadAgendaFutura();
-    toast(`Setup importado pro Cronograma Futuro: ${rows.length} data(s) preenchida(s) em ${meses.map(m=>m.label).join(', ')}.`);
+    toast(`Setup importado pro Cronograma Futuro: ${rowsFiltradas.length} data(s) preenchida(s) em ${meses.map(m=>m.label).join(', ')}.` + (qtdRespeitadas>0 ? ` (${qtdRespeitadas} não recriada(s) por já terem sido excluídas antes.)` : ''));
   } catch(err){
     state.futuroImportErro = 'Erro ao importar o Setup: ' + (err && err.message ? err.message : err);
   } finally {
@@ -5698,14 +5742,19 @@ async function salvarFuturoViewRow(){
       data, periodo, horas, tipo_agenda: tipoAgenda || null,
     };
     if(p.id){
-      const { error } = await sb.from('crm_agenda_futura').update(row).eq('id', p.id);
+      // Uma edição manual "promove" a linha pra origem='manual' — mesmo que
+      // ela tenha vindo originalmente do Setup, a partir do momento que
+      // alguém mexeu nela de propósito, ela vira uma decisão manual e
+      // precisa ficar protegida de ser apagada numa reimportação futura do
+      // Setup (que só mexe em linhas ainda marcadas como 'setup').
+      const { error } = await sb.from('crm_agenda_futura').update({ ...row, origem: 'manual' }).eq('id', p.id);
       if(error){ state.futuroViewErr = 'Erro ao salvar: ' + error.message; return; }
       const idx = AGENDA_FUTURA.findIndex(r=>r.id===p.id);
       if(idx>=0){
         AGENDA_FUTURA[idx] = { ...AGENDA_FUTURA[idx],
           clienteId: cliente.id, clienteNomePlanilha: cliente.nome,
           analistaId, analistaNomePlanilha: row.analista_nome_planilha,
-          data, periodo, horas, tipoAgenda,
+          data, periodo, horas, tipoAgenda, origem: 'manual',
         };
       }
       toast('Agenda futura atualizada.');
@@ -5728,10 +5777,23 @@ async function excluirFuturoViewRow(id){
   const r = AGENDA_FUTURA.find(x=>x.id===id);
   if(!r) return;
   if(!confirm(`Remover essa agenda (${r.clienteNomePlanilha}, ${fmtDate(r.data)})?`)) return;
+
+  // Se essa linha veio do Setup, grava uma "lembrança" da exclusão antes de
+  // apagar — senão, na próxima vez que o Setup for reimportado pro Futuro,
+  // essa mesma data reapareceria sozinha, como se ninguém tivesse mexido.
+  if (r.origem === 'setup'){
+    const { error: tombError } = await sb.from('crm_agenda_futura_excluidas').insert({
+      analista_id: r.analistaId, cliente_id: r.clienteId, data: r.data, periodo: r.periodo,
+      excluido_por: state.authUser.id,
+    });
+    if (tombError){ toast('Erro ao registrar a exclusão: ' + tombError.message, 'err'); return; }
+    AGENDA_FUTURA_EXCLUIDAS.push({ analistaId: r.analistaId, clienteId: r.clienteId, data: r.data, periodo: r.periodo });
+  }
+
   const { error } = await sb.from('crm_agenda_futura').delete().eq('id', id);
   if(error){ toast('Erro ao excluir: ' + error.message, 'err'); return; }
   AGENDA_FUTURA = AGENDA_FUTURA.filter(x=>x.id!==id);
-  toast('Registro removido.');
+  toast('Registro removido.' + (r.origem==='setup' ? ' Não vai reaparecer numa próxima reimportação do Setup.' : ''));
   render();
 }
 
