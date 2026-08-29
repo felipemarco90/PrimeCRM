@@ -886,6 +886,7 @@ let state = {
   rdaFiltroGdr: '',
   rdaFiltroCliente: '',
   rdaFiltroStatus: 'todos',
+  rdaOffsetCiclo: 0,
   kanbanFiltroResponsavel: '',
   kanbanFiltroPrioridade: '',
   kanbanSoMeus: false,
@@ -3430,6 +3431,7 @@ function setRdaFiltroAnalista(v){ state.rdaFiltroAnalista=v; render(); }
 function setRdaFiltroGdr(v){ state.rdaFiltroGdr=v; render(); }
 function setRdaFiltroCliente(v){ state.rdaFiltroCliente=v; render(); }
 function setRdaFiltroStatus(v){ state.rdaFiltroStatus=v; render(); }
+function setRdaOffsetCiclo(v){ state.rdaOffsetCiclo=v; render(); }
 function limparFiltrosRda(){
   state.rdaFiltroAnalista=''; state.rdaFiltroGdr=''; state.rdaFiltroCliente=''; state.rdaFiltroStatus='todos';
   render();
@@ -3440,21 +3442,37 @@ function limparFiltrosRda(){
 // partir de 11/set já é outro ciclo (01/set até 10/out). Baseado na data
 // real de hoje, não no mês de referência do sistema (que é só pra
 // Vigente/Futuro) — RDA tem prazo próprio de entrega.
-function janelaRda(){
+// Agendas de "H. Interno", "H. Ausência" e códigos parecidos (prefixo
+// "H.") são horas internas — nunca ligadas a um cliente de verdade
+// (cliente_id sempre vazio pra elas). Usado pra tirar essas linhas da
+// exigência de RDA em qualquer lugar do sistema que precise disso.
+function ehAgendaInterna(r){
+  if (r.clienteId) return false;
+  const nome = (r.clienteNomePlanilha||'').trim().toUpperCase();
+  return nome.startsWith('H.');
+}
+
+function janelaRda(offsetCiclos){
+  offsetCiclos = offsetCiclos || 0;
   const hoje = new Date(); hoje.setHours(0,0,0,0);
   const ano = hoje.getFullYear(), mes = hoje.getMonth(); // mes: 0-11
-  let inicioAno, inicioMes, fimAno, fimMes;
+  let inicioAno, inicioMes;
   if (hoje.getDate() <= 10){
     // ainda no ciclo que começou no mês passado
     inicioMes = mes - 1; inicioAno = ano;
     if (inicioMes < 0){ inicioMes = 11; inicioAno -= 1; }
-    fimMes = mes; fimAno = ano;
   } else {
     // já entrou no ciclo que começa neste mês
     inicioMes = mes; inicioAno = ano;
-    fimMes = mes + 1; fimAno = ano;
-    if (fimMes > 11){ fimMes = 0; fimAno += 1; }
   }
+  // Desloca pra ciclos anteriores/seguintes — cada ciclo = 1 mês de
+  // diferença no início (offsetCiclos negativo = passado, positivo = futuro).
+  inicioMes += offsetCiclos;
+  while (inicioMes < 0){ inicioMes += 12; inicioAno -= 1; }
+  while (inicioMes > 11){ inicioMes -= 12; inicioAno += 1; }
+  let fimMes = inicioMes + 1, fimAno = inicioAno;
+  if (fimMes > 11){ fimMes = 0; fimAno += 1; }
+
   const inicio = isoDate(new Date(inicioAno, inicioMes, 1));
   const fim = isoDate(new Date(fimAno, fimMes, 10));
   return { inicio, fim };
@@ -3468,11 +3486,18 @@ function pageRda(){
   const fStatus = state.rdaFiltroStatus || 'todos';
   const gdrDe = r => (r.clienteId && clientById(r.clienteId)?.gdrNome) || '';
 
-  // Base: só a janela do ciclo atual de RDA (dia 01 do mês até dia 10 do
-  // seguinte) e só o que a pessoa realmente pode ver — analista só a
+  // Base: só a janela do ciclo selecionado (dia 01 do mês até dia 10 do
+  // seguinte — por padrão o ciclo atual, mas dá pra navegar pra ciclos
+  // anteriores) e só o que a pessoa realmente pode ver — analista só a
   // própria agenda, GDR só a carteira dele.
-  const { inicio: rdaInicio, fim: rdaFim } = janelaRda();
+  const offsetCiclo = state.rdaOffsetCiclo || 0;
+  const { inicio: rdaInicio, fim: rdaFim } = janelaRda(offsetCiclo);
   let listaBase = AGENDA_VIGENTE.filter(r => r.data >= rdaInicio && r.data <= rdaFim);
+  // "H. Interno", "H. Ausência" (e códigos parecidos com prefixo "H.") são
+  // horas internas — banco de horas, treinamento, ausência — nunca ligadas
+  // a um cliente de verdade. Não gera RDA porque não teve atividade com
+  // cliente nenhum.
+  listaBase = listaBase.filter(r => !ehAgendaInterna(r));
   if(u.role==='analista') listaBase = listaBase.filter(r=>r.analistaId===u.id);
   else if(u.role==='gdr') listaBase = listaBase.filter(r=>clientById(r.clienteId)?.gdrId===u.id);
 
@@ -3501,7 +3526,12 @@ function pageRda(){
 
   return `
   <div class="topbar">
-    <div><h1>RDA — Registro de Atividade</h1><div class="sub">Acompanha quais agendas do ciclo ${fmtDate(rdaInicio)} a ${fmtDate(rdaFim)} já têm o documento de RDA salvo no Drive.</div></div>
+    <div><h1>RDA — Registro de Atividade</h1><div class="sub">Acompanha quais agendas do ciclo ${fmtDate(rdaInicio)} a ${fmtDate(rdaFim)} já têm o documento de RDA salvo no Drive.${offsetCiclo!==0 ? ' <b style="color:var(--warn);">Você está vendo um ciclo passado.</b>' : ''}</div></div>
+    <div style="display:flex;gap:8px;align-items:center;">
+      <button class="btn btn-ghost btn-sm" data-action="setRdaOffsetCiclo" data-args='[${offsetCiclo-1}]'>◂ Ciclo anterior</button>
+      ${offsetCiclo!==0 ? `<button class="btn btn-ghost btn-sm" data-action="setRdaOffsetCiclo" data-args='[0]'>Voltar pro atual</button>` : ''}
+      <button class="btn btn-ghost btn-sm" ${offsetCiclo>=0?'disabled':''} data-action="setRdaOffsetCiclo" data-args='[${offsetCiclo+1}]'>Próximo ciclo ▸</button>
+    </div>
   </div>
 
   <div class="toolbar" style="margin-bottom:18px;">
@@ -4166,6 +4196,19 @@ function pageRecorrencia(){
 
 const DIAS_SEMANA_UTEIS = ['Segunda','Terça','Quarta','Quinta','Sexta'];
 // Nome curto pra caber na célula da grade — nome completo fica no title (tooltip).
+// Horas padrão por período — usado como sugestão automática quando alguém
+// muda o período num formulário (Futuro, Vigente, Lançamento Manual,
+// Setup). Período "Horas" (customizado) não tem padrão, a pessoa digita.
+function horasPadraoPorPeriodo(periodo){
+  if (periodo === 'Integral') return 8;
+  if (periodo === 'Manhã') return 3.5;
+  if (periodo === 'Tarde') return 4.5;
+  return null;
+}
+function aplicarHorasPadrao(periodo, horasInputId){
+  const h = horasPadraoPorPeriodo(periodo);
+  if (h !== null) document.getElementById(horasInputId).value = h;
+}
 function nomeClienteCurto(r){
   const nome = r.clienteId ? (clientById(r.clienteId)?.nome || r.clienteNomePlanilha) : r.clienteNomePlanilha;
   return nome || '—';
@@ -4786,7 +4829,7 @@ function pageVigenteView(){
   </div>
 
   <div class="pill-tabs" style="margin-bottom:18px;">
-    <button class="pill-tab ${tab==='agenda'?'active':''}" data-action="setVigenteViewTab" data-args='["agenda"]'>Agenda (${fonteBase.filter(r=>r.mes===mesSel&&r.ano===anoSel).length})</button>
+    <button class="pill-tab ${tab==='agenda'?'active':''}" data-action="setVigenteViewTab" data-args='["agenda"]'>Agenda (${AGENDA_VIGENTE.filter(r=>r.mes===mesSel&&r.ano===anoSel).length})</button>
     <button class="pill-tab ${tab==='cancelamentos'?'active':''}" data-action="setVigenteViewTab" data-args='["cancelamentos"]'>Cancelamentos (${CANCELAMENTOS.filter(r=>r.mes===mesSel&&r.ano===anoSel).length})</button>
   </div>
 
@@ -5214,7 +5257,7 @@ function modalVigenteView(){
         <div class="field-row">
           <div class="field">
             <label>Período</label>
-            <select id="vv-periodo">
+            <select id="vv-periodo" onchange="aplicarHorasPadrao(this.value, 'vv-horas')">
               ${['Integral','Manhã','Tarde'].map(per=>`<option ${p.periodo===per?'selected':''}>${per}</option>`).join('')}
             </select>
           </div>
@@ -5694,7 +5737,7 @@ function modalFuturoView(){
         <div class="field-row">
           <div class="field">
             <label>Período</label>
-            <select id="fv-periodo">
+            <select id="fv-periodo" onchange="aplicarHorasPadrao(this.value, 'fv-horas')">
               ${['Integral','Manhã','Tarde'].map(per=>`<option ${p.periodo===per?'selected':''}>${per}</option>`).join('')}
             </select>
           </div>
@@ -7235,7 +7278,7 @@ const ACTIONS = {
   inativarUsuario, reativarUsuario,
   openEditarPerfilModal, setEditarPerfilNovo, salvarEditarPerfil,
   abrirModalRdaUrl, salvarRdaUrl,
-  setRdaFiltroAnalista, setRdaFiltroGdr, setRdaFiltroCliente, setRdaFiltroStatus, limparFiltrosRda,
+  setRdaFiltroAnalista, setRdaFiltroGdr, setRdaFiltroCliente, setRdaFiltroStatus, setRdaOffsetCiclo, limparFiltrosRda,
   setKanbanFiltroResponsavel, setKanbanFiltroPrioridade, toggleKanbanSoMeus, limparFiltrosKanban,
   openKanbanCardModal, toggleKanbanResponsavel, salvarKanbanCard, excluirKanbanCard, adicionarComentarioKanban,
   enviarAgendaDeRecorrenciaData, onImportarSetupFileChange, enviarConviteVigente,
