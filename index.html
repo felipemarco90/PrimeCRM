@@ -537,6 +537,7 @@ let AGENDA_FUTURA = [];
 let FERIAS = [];
 let FERIADOS = [];
 let AGENDA_FUTURA_EXCLUIDAS = [];
+let EBR = [];
 let CONFIG = { mesReferencia: null, anoReferencia: null };
 let PROMOCOES_MES = [];
 let KANBAN_CARDS = [];
@@ -767,6 +768,16 @@ async function loadAgendaFuturaExcluidas(){
     analistaId: row.analista_id, clienteId: row.cliente_id, data: row.data, periodo: row.periodo,
   }));
 }
+// EBR (Executive Business Review) — mesma lógica do RDA, mas um registro
+// por cliente por ciclo, preenchido pelo GDR.
+async function loadEbr(){
+  const { data, error } = await sb.from('crm_ebr').select('*');
+  if(error) throw error;
+  EBR = data.map(row => ({
+    id: row.id, clienteId: row.cliente_id, cicloInicio: row.ciclo_inicio,
+    ebrUrl: row.ebr_url, criadoPor: row.criado_por, atualizadoEm: row.atualizado_em,
+  }));
+}
 // Mês/ano que o sistema considera "vigente" — desacoplado do calendário
 // real, avança manualmente via "promoverMesParaVigente".
 async function loadConfig(){
@@ -814,7 +825,7 @@ async function loadUserSkills(){
 }
 async function loadAll(){
   await loadUsers();     // usuários primeiro: mapClientRow usa USERS p/ casar nome do GDR
-  await Promise.all([loadClients(), loadAgendas(), loadAcordos(), loadSkills(), loadTickets(), loadRecorrencia(), loadAgendaVigente(), loadCancelamentos(), loadAgendaFutura(), loadFerias(), loadFeriados(), loadConfig(), loadPromocoesMes(), loadKanban(), loadAgendaFuturaExcluidas()]);
+  await Promise.all([loadClients(), loadAgendas(), loadAcordos(), loadSkills(), loadTickets(), loadRecorrencia(), loadAgendaVigente(), loadCancelamentos(), loadAgendaFutura(), loadFerias(), loadFeriados(), loadConfig(), loadPromocoesMes(), loadKanban(), loadAgendaFuturaExcluidas(), loadEbr()]);
   await loadUserSkills(); // depende de SKILLS já carregado
 }
 
@@ -887,6 +898,12 @@ let state = {
   rdaFiltroCliente: '',
   rdaFiltroStatus: 'todos',
   rdaOffsetCiclo: 0,
+  ebrOffsetCiclo: 0,
+  ebrFiltroGdr: '',
+  ebrFiltroCliente: '',
+  ebrFiltroStatus: 'todos',
+  ebrUrlErr: null,
+  salvandoEbrUrl: false,
   kanbanFiltroResponsavel: '',
   kanbanFiltroPrioridade: '',
   kanbanSoMeus: false,
@@ -1171,6 +1188,7 @@ function navItems(role){
     {k:'lancamento', label:'Lançamento Manual', icon:'✎', roles:['gdr','coordenacao',...LID,'gerencia']},
     {k:'importador', label:'Importador de Planilha', icon:'📤', roles:['analista','gdr','coordenacao',...LID,'gerencia','rmo']},
     {k:'rda', label:'RDA', icon:'📄', roles:['analista','gdr','coordenacao',...LID,'gerencia','rmo']},
+    {k:'ebr', label:'EBR', icon:'📊', roles:['gdr','coordenacao',...LID,'gerencia','rmo']},
     {k:'daily', label:'Daily', icon:'🗂️', roles:['gdr','coordenador_projetos','gerencia']},
     {k:'skills', label:'Skills dos Analistas', icon:'🎯', roles:['gdr','coordenacao',...LID,'gerencia']},
     {k:'disponibilidade', label:'Disponibilidade', icon:'📅', roles:['analista','gdr','coordenacao',...LID,'gerencia','rmo']},
@@ -1236,6 +1254,7 @@ function pageContent(){
     case 'importador': return pageImportadorCentral();
     case 'feriados': return (state.page='usuarios', pageUsuarios());
     case 'rda': return pageRda();
+    case 'ebr': return pageEbr();
     case 'daily': return pageDaily();
     case 'recorrencia': return pageRecorrencia();
     case 'vigente-view': return pageVigenteView();
@@ -3600,6 +3619,209 @@ function pageRda(){
   </div></div>`}
   `;
 }
+
+/* ============================================================
+   EBR (Executive Business Review) — mesma lógica de ciclo do RDA (dia 01
+   até dia 10 do mês seguinte), mas UM REGISTRO POR CLIENTE (não por
+   agenda) — responsabilidade do GDR da carteira, não do analista. "Precisa
+   de EBR" = cliente teve pelo menos uma agenda real (não interna) no
+   Vigente dentro do ciclo.
+   ============================================================ */
+function podeEditarEbrDoCliente(clienteId, user){
+  if (CARGOS_LIDERANCA.includes(user.role)) return true;
+  const c = clientById(clienteId);
+  return user.role==='gdr' && c?.gdrId===user.id;
+}
+
+function pageEbr(){
+  const u = state.authUser;
+  const fGdr = state.ebrFiltroGdr || '';
+  const fCliente = state.ebrFiltroCliente || '';
+  const fStatus = state.ebrFiltroStatus || 'todos';
+
+  const offsetCiclo = state.ebrOffsetCiclo || 0;
+  const { inicio: ebrInicio, fim: ebrFim } = janelaRda(offsetCiclo);
+
+  // Quem precisa de EBR = carteira de clientes ATIVOS (não depende de ter
+  // agenda criada no Vigente naquele ciclo — EBR é sobre a relação com o
+  // cliente como um todo, não sobre o trabalho técnico feito). GDR só vê a
+  // própria carteira; liderança/RMO veem tudo.
+  let clientesDoCiclo = CLIENTS.filter(clienteAtivo);
+  if(u.role==='gdr') clientesDoCiclo = clientesDoCiclo.filter(c => c.gdrId === u.id);
+
+  let listaBase = clientesDoCiclo.map(c => {
+    const ebrRow = EBR.find(e => String(e.clienteId)===String(c.id) && e.cicloInicio===ebrInicio);
+    const gdrUser = c.gdrId ? userById(c.gdrId) : null;
+    return {
+      clienteId: c.id, clienteNome: c.nome,
+      gdrNome: gdrUser?.name || c.gdrNome || '—',
+      ebrUrl: ebrRow?.ebrUrl || null,
+    };
+  });
+
+  const gdrsNaFonte = [...new Set(listaBase.map(r=>r.gdrNome).filter(Boolean))].sort();
+  const clientesNaFonte = [...new Map(listaBase.map(r=>[r.clienteId, r.clienteNome])).entries()].sort((a,b)=>a[1].localeCompare(b[1]));
+
+  let list = listaBase;
+  if(fGdr) list = list.filter(r => r.gdrNome === fGdr);
+  if(fCliente) list = list.filter(r => String(r.clienteId) === fCliente);
+  if(fStatus==='pendente') list = list.filter(r => !r.ebrUrl);
+  else if(fStatus==='criada') list = list.filter(r => !!r.ebrUrl);
+
+  list = [...list].sort((a,b)=> a.clienteNome.localeCompare(b.clienteNome));
+
+  const totalPendente = listaBase.filter(r=>!r.ebrUrl).length;
+  const totalCriada = listaBase.filter(r=>!!r.ebrUrl).length;
+  const temFiltroAtivo = fGdr || fCliente || (fStatus && fStatus!=='todos');
+
+  return `
+  <div class="topbar">
+    <div><h1>EBR — Executive Business Review</h1><div class="sub">Acompanha quais clientes ativos da carteira já têm o EBR do ciclo ${fmtDate(ebrInicio)} a ${fmtDate(ebrFim)} salvo no Drive — um por cliente ativo, independente de ter agenda técnica no período.${offsetCiclo!==0 ? ' <b style="color:var(--warn);">Você está vendo um ciclo passado.</b>' : ''}</div></div>
+    <div style="display:flex;gap:8px;align-items:center;">
+      <button class="btn btn-ghost btn-sm" data-action="setEbrOffsetCiclo" data-args='[${offsetCiclo-1}]'>◂ Ciclo anterior</button>
+      ${offsetCiclo!==0 ? `<button class="btn btn-ghost btn-sm" data-action="setEbrOffsetCiclo" data-args='[0]'>Voltar pro atual</button>` : ''}
+      <button class="btn btn-ghost btn-sm" ${offsetCiclo>=0?'disabled':''} data-action="setEbrOffsetCiclo" data-args='[${offsetCiclo+1}]'>Próximo ciclo ▸</button>
+    </div>
+  </div>
+
+  <div class="toolbar" style="margin-bottom:18px;">
+    <span class="badge badge-warn">${totalPendente} pendente(s)</span>
+    <span class="badge badge-ok">${totalCriada} criado(s)</span>
+  </div>
+
+  <div class="panel" style="margin-bottom:18px;">
+    <div class="panel-body">
+      <div class="vg-filtros">
+        <div class="field" style="margin-bottom:0;">
+          <label>Status</label>
+          <select data-input="setEbrFiltroStatus">
+            <option value="todos" ${fStatus==='todos'?'selected':''}>Todos</option>
+            <option value="pendente" ${fStatus==='pendente'?'selected':''}>Pendente</option>
+            <option value="criada" ${fStatus==='criada'?'selected':''}>Criado</option>
+          </select>
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label>GDR</label>
+          <select data-input="setEbrFiltroGdr">
+            <option value="">Todos</option>
+            ${gdrsNaFonte.map(g=>`<option ${fGdr===g?'selected':''}>${g}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label>Cliente</label>
+          <select data-input="setEbrFiltroCliente">
+            <option value="">Todos</option>
+            ${clientesNaFonte.map(([id,nome])=>`<option value="${id}" ${fCliente===String(id)?'selected':''}>${nome}</option>`).join('')}
+          </select>
+        </div>
+        ${temFiltroAtivo? `<button class="btn btn-ghost btn-sm" data-action="limparFiltrosEbr" data-args='[]' style="align-self:flex-end;">✕ Limpar filtros</button>` : ''}
+      </div>
+    </div>
+  </div>
+
+  ${list.length===0 ? `<div class="panel">${emptyState('📊','Nenhum cliente ativo na carteira — nada pra revisar ainda.')}</div>` : `
+  <div class="panel"><div class="panel-body" style="padding:0;max-height:640px;overflow:auto;">
+    <table>
+      <thead><tr><th>Cliente</th><th>GDR</th><th>Status</th><th></th></tr></thead>
+      <tbody>
+        ${list.map(r=>{
+          const podeEditarEbr = podeEditarEbrDoCliente(r.clienteId, u);
+          return `<tr class="tr-hover">
+            <td class="cell-strong">${r.clienteNome}</td>
+            <td class="cell-sub">${r.gdrNome||'—'}</td>
+            <td>${r.ebrUrl ? `<span class="badge badge-ok">✓ Criado</span>` : `<span class="badge badge-warn">Pendente</span>`}</td>
+            <td style="text-align:right;white-space:nowrap;">
+              ${r.ebrUrl ? `<a href="${r.ebrUrl}" target="_blank" rel="noopener" class="btn btn-ghost btn-sm">🔗 Ver</a>` : ''}
+              ${podeEditarEbr ? `<button class="btn btn-ghost btn-sm" data-action="abrirModalEbrUrl" data-args='["${r.clienteId}"]'>✎ ${r.ebrUrl?'Editar':'Adicionar'}</button>` : ''}
+            </td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+  </div></div>`}
+  `;
+}
+
+function abrirModalEbrUrl(clienteId){
+  const c = clientById(clienteId);
+  if(!c) return;
+  if(!podeEditarEbrDoCliente(clienteId, state.authUser)){ toast('Só o GDR da carteira ou a liderança pode preencher o EBR.', 'err'); return; }
+  const offsetCiclo = state.ebrOffsetCiclo || 0;
+  const { inicio: cicloInicio, fim: cicloFim } = janelaRda(offsetCiclo);
+  const existente = EBR.find(e => String(e.clienteId)===String(clienteId) && e.cicloInicio===cicloInicio);
+  state.modal = { type:'ebrUrl', payload: {
+    clienteId, cicloInicio, cicloFim, clienteNome: c.nome,
+    url: existente?.ebrUrl || '',
+  }};
+  state.ebrUrlErr = null;
+  render();
+}
+
+function modalEbrUrl(){
+  const p = state.modal.payload;
+  return `
+  <div class="modal-bg" data-action="closeModalBg">
+    <div class="modal">
+      <div class="modal-head">
+        <h3>EBR — Executive Business Review</h3>
+        <button class="modal-close" data-action="closeModal" data-args='[]'>✕</button>
+      </div>
+      <div class="modal-body">
+        ${state.ebrUrlErr? `<div class="err-box">${state.ebrUrlErr}</div>`:''}
+        <div class="cell-sub" style="margin-bottom:14px;padding:10px 12px;background:var(--bg-2);border-radius:8px;">
+          <b style="color:var(--text-0);">${p.clienteNome}</b> · ciclo ${fmtDate(p.cicloInicio)} a ${fmtDate(p.cicloFim)}
+        </div>
+        <div class="field">
+          <label>URL do documento no Drive (Word, PDF ou apresentação)</label>
+          <input id="ebr-url" type="url" placeholder="https://drive.google.com/…" value="${p.url}">
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn btn-ghost" data-action="closeModal" data-args='[]'>Cancelar</button>
+        <button type="button" class="btn btn-primary" data-action="salvarEbrUrl" data-args='[]' ${state.salvandoEbrUrl?'disabled':''}>${state.salvandoEbrUrl?'Salvando…':'Salvar'}</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function salvarEbrUrl(){
+  if(state.salvandoEbrUrl) return;
+  const p = state.modal.payload;
+  const url = document.getElementById('ebr-url').value.trim();
+  if(url && !/^https?:\/\//i.test(url)){ state.ebrUrlErr = 'A URL precisa começar com http:// ou https://'; render(); return; }
+
+  state.salvandoEbrUrl = true; state.ebrUrlErr = null; render();
+  try{
+    // Um registro por (cliente, ciclo) — upsert em vez de sempre inserir,
+    // senão editar um EBR que já existe criaria um segundo registro em vez
+    // de atualizar o mesmo.
+    const { data, error } = await sb.from('crm_ebr')
+      .upsert({
+        cliente_id: p.clienteId, ciclo_inicio: p.cicloInicio, ebr_url: url || null,
+        criado_por: state.authUser.id, atualizado_em: new Date().toISOString(),
+      }, { onConflict: 'cliente_id,ciclo_inicio' })
+      .select();
+    if(error){ state.ebrUrlErr = 'Erro ao salvar: ' + error.message; return; }
+    if(!data || data.length===0){
+      state.ebrUrlErr = 'Não foi possível salvar — você não tem permissão pra preencher o EBR desse cliente.';
+      return;
+    }
+    const row = data[0];
+    const mapped = { id: row.id, clienteId: row.cliente_id, cicloInicio: row.ciclo_inicio, ebrUrl: row.ebr_url, criadoPor: row.criado_por, atualizadoEm: row.atualizado_em };
+    const idx = EBR.findIndex(e => String(e.clienteId)===String(p.clienteId) && e.cicloInicio===p.cicloInicio);
+    if(idx>=0) EBR[idx] = mapped; else EBR.push(mapped);
+    toast(url ? 'EBR salvo.' : 'EBR removido.');
+    state.modal = null;
+  } finally {
+    state.salvandoEbrUrl = false; render();
+  }
+}
+
+function setEbrOffsetCiclo(v){ state.ebrOffsetCiclo=v; render(); }
+function setEbrFiltroGdr(v){ state.ebrFiltroGdr=v; render(); }
+function setEbrFiltroCliente(v){ state.ebrFiltroCliente=v; render(); }
+function setEbrFiltroStatus(v){ state.ebrFiltroStatus=v; render(); }
+function limparFiltrosEbr(){ state.ebrFiltroGdr=''; state.ebrFiltroCliente=''; state.ebrFiltroStatus='todos'; render(); }
 
 async function criarFeriado(){
   if(state.salvandoFeriado) return;
@@ -6803,6 +7025,7 @@ function renderModal(){
   if(state.modal.type==='ferias') return modalFerias();
   if(state.modal.type==='editarPerfil') return modalEditarPerfil();
   if(state.modal.type==='rdaUrl') return modalRdaUrl();
+  if(state.modal.type==='ebrUrl') return modalEbrUrl();
   if(state.modal.type==='kanbanCard') return modalKanbanCard();
   return '';
 }
@@ -7278,6 +7501,7 @@ const ACTIONS = {
   inativarUsuario, reativarUsuario,
   openEditarPerfilModal, setEditarPerfilNovo, salvarEditarPerfil,
   abrirModalRdaUrl, salvarRdaUrl,
+  abrirModalEbrUrl, salvarEbrUrl, setEbrOffsetCiclo, setEbrFiltroGdr, setEbrFiltroCliente, setEbrFiltroStatus, limparFiltrosEbr,
   setRdaFiltroAnalista, setRdaFiltroGdr, setRdaFiltroCliente, setRdaFiltroStatus, setRdaOffsetCiclo, limparFiltrosRda,
   setKanbanFiltroResponsavel, setKanbanFiltroPrioridade, toggleKanbanSoMeus, limparFiltrosKanban,
   openKanbanCardModal, toggleKanbanResponsavel, salvarKanbanCard, excluirKanbanCard, adicionarComentarioKanban,
