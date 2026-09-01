@@ -404,7 +404,7 @@ tr.tr-hover:hover{background:rgba(0,194,224,.045);}
 .pill-tab{padding:7px 14px;border-radius:8px;font-size:12px;font-weight:600;color:var(--text-1);border:none;background:transparent;}
 .pill-tab.active{background:linear-gradient(90deg,var(--cyan-dim),var(--blue));color:#fff;}
 
-.two-col{display:grid;grid-template-columns:1.4fr 1fr;gap:18px;}
+.two-col{display:grid;grid-template-columns:1.4fr 1fr;gap:18px;margin-bottom:22px;}
 @media (max-width:1000px){.two-col{grid-template-columns:1fr;}}
 .mini-row{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px dashed rgba(255,255,255,.06);font-size:12.5px;}
 .mini-row:last-child{border-bottom:none;}
@@ -1184,9 +1184,9 @@ function navItems(role){
   const items = [
     {k:'dashboard', label:'Dashboard', icon:'▤', roles:['analista','gdr','coordenacao',...LID,'gerencia']},
     {k:'agenda', label:'Minha Agenda', icon:'⏱', roles:['analista']},
-    {k:'clientes', label:'Clientes', icon:'🏢', roles:['analista','gdr','coordenacao',...LID,'gerencia']},
+    {k:'clientes', label:'Clientes', icon:'🏢', roles:['gdr','coordenacao',...LID,'gerencia']},
     {k:'lancamento', label:'Lançamento Manual', icon:'✎', roles:['gdr','coordenacao',...LID,'gerencia']},
-    {k:'importador', label:'Importador de Planilha', icon:'📤', roles:['analista','gdr','coordenacao',...LID,'gerencia','rmo']},
+    {k:'importador', label:'Importador de Planilha', icon:'📤', roles:['gdr','coordenacao',...LID,'gerencia','rmo']},
     {k:'rda', label:'RDA', icon:'📄', roles:['analista','gdr','coordenacao',...LID,'gerencia','rmo']},
     {k:'ebr', label:'EBR', icon:'📊', roles:['gdr','coordenacao',...LID,'gerencia','rmo']},
     {k:'daily', label:'Daily', icon:'🗂️', roles:['gdr','coordenador_projetos','gerencia']},
@@ -1270,11 +1270,146 @@ function pageContent(){
 /* ============================================================
    DASHBOARD
    ============================================================ */
+/* ============================================================
+   DASHBOARD DO ANALISTA — diferente do dashboard geral: mostra só o que é
+   dele (clientes que ele atende, agenda confirmada, RDA e skills), nunca
+   o portfólio da empresa inteira.
+   ============================================================ */
+function pageDashboardAnalista(){
+  const u = state.authUser;
+
+  // "Clientes que atende" = clientes distintos com pelo menos uma agenda
+  // dele no Vigente — é a carteira real de trabalho, não a base toda.
+  const minhasAgendasVigente = AGENDA_VIGENTE.filter(a=>a.analistaId===u.id && !ehAgendaInterna(a));
+  const clienteIdsAtendidos = [...new Set(minhasAgendasVigente.map(a=>a.clienteId).filter(Boolean))];
+  const meusClientes = clienteIdsAtendidos.map(id=>clientById(id)).filter(Boolean).sort((a,b)=>a.nome.localeCompare(b.nome));
+
+  // Próximas agendas confirmadas (a partir de hoje), ordenadas por data.
+  const hojeStr = isoDate(new Date());
+  const proximasAgendas = minhasAgendasVigente.filter(a=>a.data>=hojeStr).sort((a,b)=>(a.data||'').localeCompare(b.data||''));
+
+  // RDA pendente dele, no ciclo atual (mesma janela usada na tela de RDA).
+  const { inicio: rdaInicio, fim: rdaFim } = janelaRda(0);
+  const minhasAgendasCiclo = AGENDA_VIGENTE.filter(a=>a.analistaId===u.id && !ehAgendaInterna(a) && a.data>=rdaInicio && a.data<=rdaFim);
+  const rdaPendentes = minhasAgendasCiclo.filter(a=>!a.rdaUrl);
+  const rdaCriadas = minhasAgendasCiclo.filter(a=>!!a.rdaUrl);
+
+  const minhasSkills = [...(USER_SKILLS[u.id]||[])].sort();
+
+  return `
+  <div class="topbar">
+    <div><h1>Olá, ${u.name.split(' ')[0]} 👋</h1><div class="sub">${fmtDate(new Date())} · <span class="role-badge">${ROLES[u.role].icon} ${ROLES[u.role].label}</span></div></div>
+    <button class="btn btn-primary" data-action="goPage" data-args='["agenda"]'>⏱ Ir para Minha Agenda</button>
+  </div>
+
+  <div class="grid kpi-row">
+    <div class="card">
+      <div class="kpi-label">Clientes que atendo</div>
+      <div class="kpi-value">${meusClientes.length}</div>
+      <div class="kpi-delta flat">Carteira de trabalho</div>
+    </div>
+    <div class="card">
+      <div class="kpi-label">Agendas confirmadas</div>
+      <div class="kpi-value">${proximasAgendas.length}</div>
+      <div class="kpi-delta flat">A partir de hoje, no Vigente</div>
+    </div>
+    <div class="card">
+      <div class="kpi-label">RDA pendente</div>
+      <div class="kpi-value">${rdaPendentes.length}</div>
+      <div class="kpi-delta ${rdaPendentes.length?'down':'up'}">${rdaCriadas.length} já criado(s) nesse ciclo</div>
+    </div>
+    <div class="card">
+      <div class="kpi-label">Minhas skills</div>
+      <div class="kpi-value">${minhasSkills.length}</div>
+      <div class="kpi-delta flat">Cadastradas</div>
+    </div>
+  </div>
+
+  <div class="two-col">
+    <div class="panel">
+      <div class="panel-head">
+        <h3>Clientes que atendo</h3>
+        <span class="badge badge-info">${meusClientes.length}</span>
+      </div>
+      <div class="panel-body" style="padding:0;${meusClientes.length>0?'max-height:400px;overflow:auto;':''}">
+        ${meusClientes.length===0 ? emptyState('🏢','Nenhum cliente com agenda confirmada ainda.') : `
+        <table>
+          <thead><tr><th>Cliente</th><th>GDR</th></tr></thead>
+          <tbody>
+            ${meusClientes.map(c=>`<tr class="tr-hover" style="cursor:pointer" data-action="openClient" data-args='["${c.id}"]'>
+              <td class="cell-strong">${c.nome}</td>
+              <td class="cell-sub">${userById(c.gdrId)?.name || c.gdrNome || '—'}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>`}
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h3>Minhas agendas (Vigente)</h3>
+        <span class="badge ${proximasAgendas.length?'badge-info':'badge-ok'}">${proximasAgendas.length}</span>
+      </div>
+      <div class="panel-body" style="padding:0;${proximasAgendas.length>0?'max-height:400px;overflow:auto;':''}">
+        ${proximasAgendas.length===0 ? emptyState('📆','Nenhuma agenda confirmada a partir de hoje.') : `
+        <table>
+          <thead><tr><th>Data</th><th>Cliente</th><th>Período</th></tr></thead>
+          <tbody>
+            ${proximasAgendas.map(a=>{
+              const c = clientById(a.clienteId);
+              return `<tr class="tr-hover">
+                <td class="mono">${fmtDate(a.data)}</td>
+                <td class="cell-strong">${c?.nome || a.clienteNomePlanilha}</td>
+                <td class="cell-sub">${a.periodo}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>`}
+      </div>
+    </div>
+  </div>
+
+  <div class="two-col">
+    <div class="panel">
+      <div class="panel-head">
+        <h3>RDA — ciclo ${fmtDate(rdaInicio)} a ${fmtDate(rdaFim)}</h3>
+        <span class="badge ${rdaPendentes.length?'badge-warn':'badge-ok'}">${rdaPendentes.length} pendente(s)</span>
+      </div>
+      <div class="panel-body" style="padding:0;${rdaPendentes.length>0?'max-height:320px;overflow:auto;':''}">
+        ${rdaPendentes.length===0 ? emptyState('✅','Tudo em dia por aqui.') : `
+        <table>
+          <thead><tr><th>Data</th><th>Cliente</th><th></th></tr></thead>
+          <tbody>
+            ${rdaPendentes.map(a=>{
+              const c = clientById(a.clienteId);
+              return `<tr class="tr-hover">
+                <td class="mono">${fmtDate(a.data)}</td>
+                <td class="cell-strong">${c?.nome || a.clienteNomePlanilha}</td>
+                <td style="text-align:right;"><button class="btn btn-ghost btn-sm" data-action="abrirModalRdaUrl" data-args='["${a.id}"]'>✎ Adicionar</button></td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>`}
+        ${rdaPendentes.length>0 ? `<div style="padding:12px 16px;"><button class="btn btn-ghost btn-sm btn-block" data-action="goPage" data-args='["rda"]'>Ver tudo em RDA →</button></div>` : ''}
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h3>Minhas skills</h3></div>
+      <div class="panel-body">
+        ${minhasSkills.length===0 ? emptyState('🎯','Nenhuma skill cadastrada ainda — fale com seu GDR/liderança.') :
+          `<div style="display:flex;flex-wrap:wrap;gap:8px;">${minhasSkills.map(s=>`<span class="badge badge-info">${s}</span>`).join('')}</div>`}
+      </div>
+    </div>
+  </div>
+  `;
+}
+
 function pageDashboard(){
   const u = state.authUser;
-  const isAnalista = u.role==='analista';
+  if(u.role==='analista') return pageDashboardAnalista();
   const ativos = CLIENTS.filter(clienteAtivo);
-  const myClients = isAnalista ? ativos : (u.role==='gdr' ? ativos.filter(c=>c.gdrId===u.id) : ativos);
+  const myClients = u.role==='gdr' ? ativos.filter(c=>c.gdrId===u.id) : ativos;
   const totalContratadas = myClients.reduce((s,c)=>s+c.horasContratadas,0);
   const totalConsumidas = myClients.reduce((s,c)=>s+c.horasConsumidas,0);
   const totalSaldo = totalContratadas-totalConsumidas;
@@ -1290,18 +1425,27 @@ function pageDashboard(){
 
   const clientesEmReversaoChurn = myClients.filter(c=>c.status==='Reversão Churn');
 
+  // EBR do ciclo atual — mesma janela do RDA, um por cliente ativo da
+  // carteira visível (GDR só a própria, liderança todos).
+  const { inicio: ebrInicio, fim: ebrFim } = janelaRda(0);
+  const ebrPendentes = myClients.filter(c => !EBR.find(e => String(e.clienteId)===String(c.id) && e.cicloInicio===ebrInicio));
+  const ebrCriados = myClients.length - ebrPendentes.length;
+
+  // Agendas confirmadas de HOJE, só de clientes da carteira visível.
+  const hojeStr = isoDate(new Date());
+  const idsClientesVisiveis = new Set(myClients.map(c=>c.id));
+  const agendasHoje = AGENDA_VIGENTE
+    .filter(a => a.data===hojeStr && a.clienteId && idsClientesVisiveis.has(a.clienteId) && !ehAgendaInterna(a))
+    .sort((a,b) => (a.clienteNomePlanilha||'').localeCompare(b.clienteNomePlanilha||''));
+
   return `
   <div class="topbar">
-    <div>
-      <h1>Olá, ${u.name.split(' ')[0]} 👋</h1>
-      <div class="sub">${fmtDate(new Date())} · <span class="role-badge">${ROLES[u.role].icon} ${ROLES[u.role].label}</span></div>
-    </div>
-    ${isAnalista ? `<button class="btn btn-primary" data-action="goPage" data-args='["agenda"]'>⏱ Ir para Minha Agenda</button>` : ''}
+    <div><h1>Olá, ${u.name.split(' ')[0]} 👋</h1><div class="sub">${fmtDate(new Date())} · <span class="role-badge">${ROLES[u.role].icon} ${ROLES[u.role].label}</span></div></div>
   </div>
 
   <div class="grid kpi-row">
     <div class="card">
-      <div class="kpi-label">${u.role==='analista'?'Clientes na base':'Clientes na carteira'}</div>
+      <div class="kpi-label">Clientes na carteira</div>
       <div class="kpi-value">${myClients.length}</div>
       <div class="kpi-delta flat">Total monitorado</div>
     </div>
@@ -1367,6 +1511,53 @@ function pageDashboard(){
     </div>
   </div>
 
+  <div class="two-col">
+    <div class="panel">
+      <div class="panel-head">
+        <h3>EBR do ciclo</h3>
+        <span class="badge ${ebrPendentes.length?'badge-warn':'badge-ok'}">${ebrPendentes.length} pendente(s)</span>
+      </div>
+      <div class="panel-body" style="padding:0;${ebrPendentes.length>0?'max-height:320px;overflow:auto;':''}">
+        <div class="cell-sub" style="padding:10px 16px;">Ciclo ${fmtDate(ebrInicio)} a ${fmtDate(ebrFim)} · ${ebrCriados} já criado(s)</div>
+        ${ebrPendentes.length===0 ? emptyState('✅','Todo mundo com EBR em dia nesse ciclo.') : `
+        <table>
+          <thead><tr><th>Cliente</th><th></th></tr></thead>
+          <tbody>
+            ${ebrPendentes.slice(0,8).map(c=>`<tr class="tr-hover">
+              <td class="cell-strong">${c.nome}</td>
+              <td style="text-align:right;"><button class="btn btn-ghost btn-sm" data-action="abrirModalEbrUrl" data-args='["${c.id}"]'>✎ Adicionar</button></td>
+            </tr>`).join('')}
+          </tbody>
+        </table>`}
+        ${ebrPendentes.length>0 ? `<div style="padding:12px 16px;"><button class="btn btn-ghost btn-sm btn-block" data-action="goPage" data-args='["ebr"]'>Ver tudo em EBR →</button></div>` : ''}
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h3>Agendas de hoje</h3>
+        <span class="badge ${agendasHoje.length?'badge-info':'badge-ok'}">${agendasHoje.length}</span>
+      </div>
+      <div class="panel-body" style="padding:0;${agendasHoje.length>0?'max-height:320px;overflow:auto;':''}">
+        ${agendasHoje.length===0 ? emptyState('📆','Nenhuma agenda confirmada pra hoje.') : `
+        <table>
+          <thead><tr><th>Cliente</th><th>Analista</th><th>Período</th></tr></thead>
+          <tbody>
+            ${agendasHoje.map(a=>{
+              const c = clientById(a.clienteId);
+              const nomeAnalista = a.analistaId ? (userById(a.analistaId)?.name||a.analistaNomePlanilha) : a.analistaNomePlanilha;
+              return `<tr class="tr-hover" style="cursor:pointer" data-action="openClient" data-args='["${a.clienteId}"]'>
+                <td class="cell-strong">${c?.nome||a.clienteNomePlanilha}</td>
+                <td class="cell-sub">${nomeAnalista}</td>
+                <td class="cell-sub">${a.periodo}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>`}
+      </div>
+    </div>
+  </div>
+
   <div class="section-title">
     <div><h3>Saúde do banco de horas</h3><div class="sd">Percentual consumido por cliente</div></div>
   </div>
@@ -1403,43 +1594,23 @@ function emptyState(icon,text){
 }
 
 /* ============================================================
-   MINHA AGENDA (Analista) — Iniciar / Finalizar
+   MINHA AGENDA (Analista) — histórico. O registro de horas por
+   cronômetro (Iniciar/Finalizar) está desativado nesse primeiro momento —
+   só o GDR lança horas agora, via Lançamento Manual.
    ============================================================ */
 function pageAgenda(){
   const u = state.authUser;
-  const t = state.timer;
   const myAgendas = AGENDAS.filter(a=>a.analistaId===u.id).sort((a,b)=>new Date(b.inicio)-new Date(a.inicio));
-  const elapsed = t.running ? (state.clock - new Date(t.startedAt).getTime()) : 0;
-  const hh = pad(Math.floor(elapsed/3600000));
-  const mm = pad(Math.floor((elapsed%3600000)/60000));
-  const ss = pad(Math.floor((elapsed%60000)/1000));
 
   return `
   <div class="topbar">
-    <div><h1>Minha Agenda</h1><div class="sub">Inicie o atendimento e finalize para calcular as horas automaticamente.</div></div>
+    <div><h1>Minha Agenda</h1><div class="sub">Acompanhe suas agendas lançadas.</div></div>
   </div>
 
-  <div class="timer-card">
-    <div class="timer-left">
-      <div class="tl-label">${t.running ? 'Agenda em andamento':'Cronômetro parado'}</div>
-      ${t.running
-        ? `<div class="timer-clock">${hh}:${mm}:${ss}</div>
-           <div class="timer-client">🏢 ${clientById(t.clientId)?.nome} · iniciado às ${fmtDateTime(t.startedAt).split(' ')[1]||''}</div>`
-        : `<div class="timer-clock idle">00:00:00 — selecione um cliente e inicie a agenda</div>`}
-    </div>
-    <div class="timer-right">
-      ${!t.running ? `
-        <select class="select-mini" id="timer-client">
-          <option value="">Selecione o cliente…</option>
-          ${CLIENTS.filter(clienteAtivo).sort((a,b)=>a.nome.localeCompare(b.nome)).map(c=>`<option value="${c.id}">${c.nome} (saldo ${fmtH(saldo(c))}h)</option>`).join('')}
-        </select>
-        <input class="select-mini" id="timer-desc" placeholder="Descrição rápida (opcional)">
-        <button class="btn btn-primary" data-action="startAgenda" data-args='[]'>▶ Iniciar agenda</button>
-      ` : `
-        <div class="mini-row" style="border:none;"><span class="mk">Cliente</span><span class="mv">${clientById(t.clientId)?.nome}</span></div>
-        <input class="select-mini" id="timer-desc-run" placeholder="Descrição da atividade" value="${t.desc||''}">
-        <button class="btn btn-danger" data-action="stopAgenda" data-args='[]'>■ Finalizar agenda</button>
-      `}
+  <div class="panel" style="margin-bottom:22px;">
+    <div class="panel-body" style="display:flex;align-items:center;gap:12px;">
+      <span style="font-size:22px;">ℹ️</span>
+      <div class="cell-sub">Por enquanto, o registro de horas é feito pelo GDR responsável pelo cliente — não é mais preciso iniciar/finalizar agenda por aqui. Se notar alguma agenda faltando ou incorreta, fale com o GDR.</div>
     </div>
   </div>
 
@@ -1468,14 +1639,7 @@ function pageAgenda(){
 }
 
 function startAgenda(){
-  const sel = document.getElementById('timer-client');
-  const clientId = sel.value;
-  if(!clientId){ toast('Selecione um cliente para iniciar a agenda.', 'err'); return; }
-  const desc = document.getElementById('timer-desc').value;
-  state.timer = {running:true, clientId, startedAt: new Date().toISOString(), desc};
-  toast('Agenda iniciada. O cronômetro está rodando.');
-  render();
-  tickTimer();
+  toast('Registro de horas por cronômetro está desativado — o GDR responsável lança as horas agora.', 'err');
 }
 // Desconta a sobreposição com o horário de almoço da TOTVS (12:00–13:30) do
 // tempo entre 'inicio' e 'fim' — cobre também o caso raro de abranger mais
@@ -1498,30 +1662,7 @@ function msDescontandoAlmoco(inicio, fim){
 }
 
 async function stopAgenda(){
-  const t = state.timer;
-  const descEl = document.getElementById('timer-desc-run');
-  const desc = descEl ? descEl.value : t.desc;
-  const start = new Date(t.startedAt);
-  const end = new Date();
-  let horas = msDescontandoAlmoco(start, end)/3600000;
-  if(horas < (1/60)) horas = 1/60; // mínimo 1 minuto p/ demo
-  horas = Math.round(horas*100)/100;
-
-  const payload = {
-    cliente_id: Number(t.clientId), analista_id: state.authUser.id, origem: 'timer',
-    inicio: start.toISOString(), fim: end.toISOString(), horas,
-    status: 'pendente', criado_por: state.authUser.id, aprovado_por: null,
-    descricao: desc || 'Atendimento via cronômetro.'
-  };
-  const { data, error } = await sb.from('crm_agendas').insert(payload).select().single();
-  if(error){
-    toast('Erro ao salvar a agenda no Supabase: ' + error.message, 'err');
-    return;
-  }
-  AGENDAS.unshift(mapAgendaRow(data));
-  state.timer = {running:false, clientId:null, startedAt:null, desc:''};
-  toast(`Agenda finalizada: ${fmtH(horas)}h enviadas para aprovação do GDR.`);
-  render();
+  toast('Registro de horas por cronômetro está desativado — o GDR responsável lança as horas agora.', 'err');
 }
 let timerInterval = null;
 function tickTimer(){
@@ -1550,8 +1691,12 @@ function pageClientes(){
   const u = state.authUser;
   const canEdit = ['gdr', ...CARGOS_LIDERANCA.filter(r=>r!=='rmo')].includes(u.role);
   const filtro = state.clientesFiltroStatus; // 'ativos' | 'inativos' | 'todos' | 'sem_agenda'
-  let list = CLIENTS;
-  if(u.role==='gdr') list = list.filter(c=>c.gdrId===u.id);
+  // Base já filtrada pela carteira do GDR — usada tanto na lista quanto na
+  // busca (datalist), pra nunca vazar nome de cliente de fora da carteira
+  // dele em nenhum dos dois lugares.
+  let baseVisivel = CLIENTS;
+  if(u.role==='gdr') baseVisivel = baseVisivel.filter(c=>c.gdrId===u.id);
+  let list = baseVisivel;
   const qtdAtivos = list.filter(clienteAtivo).length;
   const qtdInativos = list.filter(c=>!clienteAtivo(c)).length;
   const idsComAgenda = clientesComAgendaEmAlgumLugar();
@@ -1573,7 +1718,7 @@ function pageClientes(){
     <div class="search-box">
       <input id="client-search" list="dl-busca-clientes" placeholder="Buscar por nome ou código…" value="${state.clientQuery}" data-input="setClientQuery">
       <datalist id="dl-busca-clientes">
-        ${[...CLIENTS].sort((a,b)=>a.nome.localeCompare(b.nome)).map(c=>`<option value="${c.nome}">`).join('')}
+        ${[...baseVisivel].sort((a,b)=>a.nome.localeCompare(b.nome)).map(c=>`<option value="${c.nome}">`).join('')}
       </datalist>
     </div>
     <div class="pill-tabs">
@@ -1632,7 +1777,10 @@ function pageClienteDetalhe(){
       <h1>${c.nome}</h1>
       <div class="sub">${c.codigo} · ${c.pacote} · ${c.tipoContrato} ${statusPill(c.status)}</div>
     </div>
-    ${canEdit? `<button class="btn btn-ghost" data-action="openClientForm" data-args='["${c.id}"]'>✎ Editar cliente</button>`:''}
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      ${canEdit? `<button class="btn btn-ghost" data-action="openClientForm" data-args='["${c.id}"]'>✎ Editar cliente</button>`:''}
+      <button class="btn btn-primary" data-action="abrirModalTextoAgendas" data-args='["${c.id}"]'>📋 Extrair agendas do mês</button>
+    </div>
   </div>
 
   <div class="grid kpi-row">
@@ -1675,6 +1823,89 @@ function pageClienteDetalhe(){
 }
 
 function backToClientList(){ state.selectedClientId=null; render(); }
+
+/* ============================================================
+   EXTRAIR TEXTO DE AGENDAS — monta uma mensagem pronta com as agendas do
+   cliente no mês de referência (Vigente = confirmado/programado) e o
+   saldo atual, pra colar direto num e-mail/WhatsApp pro cliente.
+   ============================================================ */
+function gerarTextoAgendasCliente(clienteId){
+  const c = clientById(clienteId);
+  if(!c) return '';
+  // O Vigente pode ter mais de um mês ao mesmo tempo (ex: agosto ainda
+  // rolando + setembro já promovido) — por isso pega TUDO a partir de
+  // hoje (data real), não só o mês de referência mais recente. Senão
+  // ficava faltando o resto do mês corrente ainda em andamento.
+  const hojeStr = isoDate(new Date());
+  const linhas = AGENDA_VIGENTE
+    .filter(a => String(a.clienteId)===String(clienteId) && a.data >= hojeStr)
+    .sort((a,b) => (a.data||'').localeCompare(b.data||''));
+
+  const dataCurta = iso => { const d = paraDataLocal(iso); return String(d.getDate()).padStart(2,'0')+'/'+String(d.getMonth()+1).padStart(2,'0'); };
+  const nomeAnalista = a => a.analistaId ? (userById(a.analistaId)?.name.split(' ')[0] || a.analistaNomePlanilha) : (a.analistaNomePlanilha || '—');
+  // Saldo redondo mostra sem casa decimal ("480 horas"), fracionado mostra
+  // com 1 casa ("480,5 horas") — mais limpo pra colar numa mensagem.
+  const saldoNum = saldo(c);
+  const saldoTexto = Number.isInteger(Math.round(saldoNum*10)/10)
+    ? String(Math.round(saldoNum))
+    : fmtH(saldoNum);
+
+  // Se tudo cair no mesmo mês, mantém a saudação nomeando o mês ("Para
+  // setembro,..."); se as agendas cruzarem mais de um mês (caso do
+  // exemplo: resto de agosto + setembro), usa uma abertura genérica, já
+  // que "Para X" não faria sentido com datas de dois meses juntas.
+  const mesesUnicos = [...new Set(linhas.map(a=>a.mes))];
+  const abertura = mesesUnicos.length===1
+    ? `Olá tudo bem? Para ${mesesUnicos[0]}, segue as seguintes agendas programadas:`
+    : `Olá tudo bem? Seguem as agendas programadas:`;
+
+  const corpo = linhas.length===0
+    ? 'Nenhuma agenda programada a partir de hoje.'
+    : linhas.map(a => `📅 ${dataCurta(a.data)} – ${a.periodo} - ${nomeAnalista(a)}`).join('\n');
+
+  return `${abertura}\n\n${corpo}\n\nSaldo atual do Projeto: ${saldoTexto} horas.`;
+}
+
+function abrirModalTextoAgendas(clienteId){
+  const texto = gerarTextoAgendasCliente(clienteId);
+  state.modal = { type:'textoAgendas', payload: { clienteId, texto } };
+  render();
+}
+
+function modalTextoAgendas(){
+  const p = state.modal.payload;
+  return `
+  <div class="modal-bg" data-action="closeModalBg">
+    <div class="modal" style="max-width:520px;">
+      <div class="modal-head">
+        <h3>Agendas do mês — texto pronto</h3>
+        <button class="modal-close" data-action="closeModal" data-args='[]'>✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="cell-sub" style="margin-bottom:10px;">Edite se precisar, depois copie e cole onde quiser enviar.</div>
+        <textarea id="texto-agendas-area" rows="12" style="width:100%;font-family:inherit;">${p.texto}</textarea>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn btn-ghost" data-action="closeModal" data-args='[]'>Fechar</button>
+        <button type="button" class="btn btn-primary" data-action="copiarTextoAgendas" data-args='[]'>📋 Copiar texto</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+async function copiarTextoAgendas(){
+  const texto = document.getElementById('texto-agendas-area').value;
+  try{
+    await navigator.clipboard.writeText(texto);
+    toast('Texto copiado.');
+  } catch(err){
+    // Alguns navegadores/contextos bloqueiam a API de clipboard — nesse
+    // caso seleciona o texto pra pessoa copiar manualmente (Ctrl+C).
+    const el = document.getElementById('texto-agendas-area');
+    el.focus(); el.select();
+    toast('Não consegui copiar automaticamente — texto selecionado, use Ctrl+C.', 'err');
+  }
+}
 
 function openClientForm(id){
   state.modal = {type:'client', payload: id ? {...clientById(id)} : {
@@ -7026,6 +7257,7 @@ function renderModal(){
   if(state.modal.type==='editarPerfil') return modalEditarPerfil();
   if(state.modal.type==='rdaUrl') return modalRdaUrl();
   if(state.modal.type==='ebrUrl') return modalEbrUrl();
+  if(state.modal.type==='textoAgendas') return modalTextoAgendas();
   if(state.modal.type==='kanbanCard') return modalKanbanCard();
   return '';
 }
@@ -7502,6 +7734,7 @@ const ACTIONS = {
   openEditarPerfilModal, setEditarPerfilNovo, salvarEditarPerfil,
   abrirModalRdaUrl, salvarRdaUrl,
   abrirModalEbrUrl, salvarEbrUrl, setEbrOffsetCiclo, setEbrFiltroGdr, setEbrFiltroCliente, setEbrFiltroStatus, limparFiltrosEbr,
+  abrirModalTextoAgendas, copiarTextoAgendas,
   setRdaFiltroAnalista, setRdaFiltroGdr, setRdaFiltroCliente, setRdaFiltroStatus, setRdaOffsetCiclo, limparFiltrosRda,
   setKanbanFiltroResponsavel, setKanbanFiltroPrioridade, toggleKanbanSoMeus, limparFiltrosKanban,
   openKanbanCardModal, toggleKanbanResponsavel, salvarKanbanCard, excluirKanbanCard, adicionarComentarioKanban,
