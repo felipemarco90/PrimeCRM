@@ -538,6 +538,9 @@ let FERIAS = [];
 let FERIADOS = [];
 let AGENDA_FUTURA_EXCLUIDAS = [];
 let EBR = [];
+let SPRINTS = [];
+let SPRINT_ITENS = [];
+let CRONOGRAMA_FASES = [];
 let CONFIG = { mesReferencia: null, anoReferencia: null };
 let PROMOCOES_MES = [];
 let KANBAN_CARDS = [];
@@ -778,6 +781,40 @@ async function loadEbr(){
     ebrUrl: row.ebr_url, criadoPor: row.criado_por, atualizadoEm: row.atualizado_em,
   }));
 }
+// Cronograma/Sprint do cliente — ciclos de trabalho com data livre e um
+// backlog de itens (Backlog -> Em andamento -> Concluído).
+async function loadSprints(){
+  const { data, error } = await sb.from('crm_sprints').select('*');
+  if(error) throw error;
+  SPRINTS = data.map(row => ({
+    id: row.id, clienteId: row.cliente_id, dataInicio: row.data_inicio, dataFim: row.data_fim,
+    objetivo: row.objetivo, status: row.status,
+    retroOQueFuncionou: row.retro_o_que_funcionou, retroOQueMelhorar: row.retro_o_que_melhorar, retroAcaoProximo: row.retro_acao_proximo,
+    criadoPor: row.criado_por, criadoEm: row.criado_em, encerradoPor: row.encerrado_por, encerradoEm: row.encerrado_em,
+  }));
+}
+async function loadSprintItens(){
+  const { data, error } = await sb.from('crm_sprint_itens').select('*');
+  if(error) throw error;
+  SPRINT_ITENS = data.map(row => ({
+    id: row.id, clienteId: row.cliente_id, sprintId: row.sprint_id, titulo: row.titulo,
+    prioridade: row.prioridade, horasEstimadas: row.horas_estimadas===null?null:parseFloat(row.horas_estimadas),
+    status: row.status, responsavelId: row.responsavel_id,
+    criadoPor: row.criado_por, criadoEm: row.criado_em, concluidoEm: row.concluido_em,
+  }));
+}
+// Cronograma do cliente — fases/marcos macro do projeto, campos fixos
+// seguindo boas práticas de gestão de projeto.
+async function loadCronogramaFases(){
+  const { data, error } = await sb.from('crm_cronograma_fases').select('*');
+  if(error) throw error;
+  CRONOGRAMA_FASES = data.map(row => ({
+    id: row.id, clienteId: row.cliente_id, fase: row.fase,
+    dataInicio: row.data_inicio, dataFim: row.data_fim, status: row.status,
+    responsavel: row.responsavel, observacao: row.observacao, ordem: row.ordem,
+    criadoPor: row.criado_por, criadoEm: row.criado_em, atualizadoEm: row.atualizado_em,
+  }));
+}
 // Mês/ano que o sistema considera "vigente" — desacoplado do calendário
 // real, avança manualmente via "promoverMesParaVigente".
 async function loadConfig(){
@@ -825,7 +862,7 @@ async function loadUserSkills(){
 }
 async function loadAll(){
   await loadUsers();     // usuários primeiro: mapClientRow usa USERS p/ casar nome do GDR
-  await Promise.all([loadClients(), loadAgendas(), loadAcordos(), loadSkills(), loadTickets(), loadRecorrencia(), loadAgendaVigente(), loadCancelamentos(), loadAgendaFutura(), loadFerias(), loadFeriados(), loadConfig(), loadPromocoesMes(), loadKanban(), loadAgendaFuturaExcluidas(), loadEbr()]);
+  await Promise.all([loadClients(), loadAgendas(), loadAcordos(), loadSkills(), loadTickets(), loadRecorrencia(), loadAgendaVigente(), loadCancelamentos(), loadAgendaFutura(), loadFerias(), loadFeriados(), loadConfig(), loadPromocoesMes(), loadKanban(), loadAgendaFuturaExcluidas(), loadEbr(), loadSprints(), loadSprintItens(), loadCronogramaFases()]);
   await loadUserSkills(); // depende de SKILLS já carregado
 }
 
@@ -903,6 +940,13 @@ let state = {
   ebrFiltroCliente: '',
   ebrFiltroStatus: 'todos',
   ebrUrlErr: null,
+  sprintErr: null,
+  salvandoSprint: false,
+  cronogramaErr: null,
+  lancamentoErr: null,
+  salvandoLancamento: false,
+  salvandoLancamentoManual: false,
+  salvandoFase: false,
   salvandoEbrUrl: false,
   kanbanFiltroResponsavel: '',
   kanbanFiltroPrioridade: '',
@@ -958,6 +1002,15 @@ function saldo(client){
   return client.horasContratadas - client.horasConsumidas;
 }
 function saldoPct(client){ return Math.max(0, Math.min(100, (client.horasConsumidas/client.horasContratadas)*100)); }
+// Soma horas aprovadas (crm_agendas) de um cliente dentro do mês/ano REAL
+// de hoje — zera sozinho todo mês, diferente do saldo total do contrato.
+function horasMesAtualDoCliente(clienteId, hojeRef){
+  hojeRef = hojeRef || new Date();
+  return AGENDAS
+    .filter(a => String(a.clienteId)===String(clienteId) && a.status==='aprovada')
+    .filter(a => { const d = new Date(a.inicio); return d.getMonth()===hojeRef.getMonth() && d.getFullYear()===hojeRef.getFullYear(); })
+    .reduce((soma,a) => soma + (a.horas||0), 0);
+}
 function userById(id){ return USERS.find(u=>u.id===id); }
 function clientById(id){ return CLIENTS.find(c=>String(c.id)===String(id)); }
 function pendingAgendasFor(user){
@@ -1712,7 +1765,10 @@ function pageClientes(){
   return `
   <div class="topbar">
     <div><h1>Clientes</h1><div class="sub">Cadastro e banco de horas por cliente.</div></div>
-    ${canEdit? `<button class="btn btn-primary" data-action="openClientForm" data-args='[]'>+ Novo cliente</button>`:''}
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="btn btn-ghost" data-action="abrirModalRelatorioHorasMes" data-args='[]'>📊 Horas do mês (carteira)</button>
+      ${canEdit? `<button class="btn btn-primary" data-action="openClientForm" data-args='[]'>+ Novo cliente</button>`:''}
+    </div>
   </div>
   <div class="toolbar" style="margin-bottom:18px;">
     <div class="search-box">
@@ -1769,6 +1825,13 @@ function pageClienteDetalhe(){
   if(!c){ state.selectedClientId=null; return pageClientes(); }
   const gdr = userById(c.gdrId);
   const hist = AGENDAS.filter(a=>a.clienteId===c.id).sort((a,b)=>new Date(b.inicio)-new Date(a.inicio));
+  const historicoAcordo = ACORDOS.filter(a=>a.clienteId===c.id).sort((a,b)=>new Date(b.criadoEm)-new Date(a.criadoEm));
+  // "Horas consumidas (mês atual)" — zera todo mês, diferente do saldo
+  // geral do contrato (que é acumulado desde o início). Soma só o que foi
+  // aprovado (mesma fonte do Histórico de agendas abaixo) com início
+  // dentro do mês/ano REAL de hoje.
+  const hojeRef = new Date();
+  const horasConsumidasMesAtual = horasMesAtualDoCliente(c.id, hojeRef);
   const pct = saldoPct(c); const cls = pct>=90?'danger':(pct>=70?'warn':'');
   return `
   <button class="btn btn-ghost btn-sm" style="margin-bottom:16px;" data-action="backToClientList">← Voltar para clientes</button>
@@ -1779,13 +1842,14 @@ function pageClienteDetalhe(){
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;">
       ${canEdit? `<button class="btn btn-ghost" data-action="openClientForm" data-args='["${c.id}"]'>✎ Editar cliente</button>`:''}
+      <button class="btn btn-ghost" data-action="abrirModalCronograma" data-args='["${c.id}"]'>🗓️ Cronograma</button>
       <button class="btn btn-primary" data-action="abrirModalTextoAgendas" data-args='["${c.id}"]'>📋 Extrair agendas do mês</button>
     </div>
   </div>
 
   <div class="grid kpi-row">
     <div class="card"><div class="kpi-label">Horas contratadas</div><div class="kpi-value">${fmtH(c.horasContratadas)}<small> h</small></div></div>
-    <div class="card"><div class="kpi-label">Horas consumidas (aprovadas)</div><div class="kpi-value">${fmtH(c.horasConsumidas)}<small> h</small></div></div>
+    <div class="card"><div class="kpi-label">Horas consumidas (mês atual)</div><div class="kpi-value">${fmtH(horasConsumidasMesAtual)}<small> h</small></div><div class="kpi-delta flat">${MESES_PT[hojeRef.getMonth()]}/${hojeRef.getFullYear()} · zera todo mês</div></div>
     <div class="card"><div class="kpi-label">Saldo restante</div><div class="kpi-value" style="color:${saldo(c)<0?'var(--danger)':'inherit'}">${fmtH(saldo(c))}<small> h</small></div></div>
     <div class="card"><div class="kpi-label">GDR responsável</div><div class="kpi-value" style="font-size:16px;">${gdr?.name||'—'}</div></div>
   </div>
@@ -1798,11 +1862,34 @@ function pageClienteDetalhe(){
     </div>
   </div>
 
+  <div class="section-title"><div><h3>Histórico de Acordo de Gestão</h3><div class="sd">Toda solicitação já feita pra esse cliente — o campo "Observação do Acordo" mostra só o valor atual, mas nada daqui se perde.</div></div></div>
+  <div class="panel" style="margin-bottom:22px;"><div class="panel-body" style="padding:0;${historicoAcordo.length>4?'max-height:420px;overflow:auto;':''}">
+    ${historicoAcordo.length===0 ? emptyState('📋','Nenhum acordo de gestão solicitado pra esse cliente ainda.') :
+      historicoAcordo.map(a=>{
+        const solicitante = userById(a.solicitadoPor);
+        const fmtNum = v => (v===null||v===undefined) ? '—' : fmtH(v)+'h';
+        return `
+        <div style="padding:14px 16px;border-bottom:1px solid var(--line);">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:8px;">
+            <div class="cell-sub">Solicitado por ${solicitante?.name||'—'} em ${fmtDateTime(a.criadoEm)}</div>
+            ${statusBadge(a.status)}
+          </div>
+          ${String(a.horasAcordoAtual??'')!==String(a.horasAcordoNovo??'') ? `<div class="mini-row"><span class="mk">Horas acordo gestão</span><span class="mv">${fmtNum(a.horasAcordoAtual)} → <b style="color:var(--cyan-soft);">${fmtNum(a.horasAcordoNovo)}</b></span></div>` : ''}
+          ${String(a.saldoAtual??'')!==String(a.saldoNovo??'') ? `<div class="mini-row"><span class="mk">Saldo</span><span class="mv">${fmtNum(a.saldoAtual)} → <b style="color:var(--cyan-soft);">${fmtNum(a.saldoNovo)}</b></span></div>` : ''}
+          ${String(a.obsAcordoAtual??'')!==String(a.obsAcordoNovo??'') ? `<div class="mini-row" style="align-items:flex-start;"><span class="mk">Observação</span><span class="mv" style="text-align:right;max-width:70%;">${a.obsAcordoAtual||'—'} → <b style="color:var(--cyan-soft);">${a.obsAcordoNovo||'—'}</b></span></div>` : ''}
+          ${a.status!=='pendente' ? `<div class="cell-sub" style="margin-top:6px;">Decidido por ${userById(a.aprovadoPor)?.name||'—'} em ${fmtDateTime(a.decididoEm)}</div>` : ''}
+        </div>`;
+      }).join('')}
+  </div></div>
+
+  <div class="section-title"><div><h3>Cronograma / Sprint</h3><div class="sd">Ciclos de trabalho com data livre — sem cadência fixa, cada cliente no ritmo dele.</div></div></div>
+  ${renderSprintCliente(c, u, canEdit)}
+
   <div class="section-title"><div><h3>Histórico de agendas</h3><div class="sd">Automáticas (cronômetro) e manuais</div></div></div>
   <div class="panel"><div class="panel-body" style="padding:0;">
     ${hist.length===0? emptyState('🗓️','Nenhuma agenda lançada para este cliente ainda.') : `
     <table>
-      <thead><tr><th>Analista</th><th>Origem</th><th>Início</th><th>Duração</th><th>Status</th><th>Lançado por</th><th>Descrição</th></tr></thead>
+      <thead><tr><th>Analista</th><th>Origem</th><th>Início</th><th>Duração</th><th>Status</th><th>Lançado por</th><th>Descrição</th><th></th></tr></thead>
       <tbody>
         ${hist.map(a=>{
           const an=userById(a.analistaId); const by=userById(a.criadoPor);
@@ -1814,6 +1901,7 @@ function pageClienteDetalhe(){
             <td>${statusBadge(a.status)}</td>
             <td class="cell-sub">${by?.name.split(' ')[0]||'—'} <span style="opacity:.6">(${ROLES[by?.role]?.label||''})</span></td>
             <td class="cell-sub" style="max-width:200px;">${a.descricao||'—'}</td>
+            <td style="text-align:right;white-space:nowrap;">${canEdit? `<button class="btn btn-ghost btn-sm" data-action="abrirModalEditarLancamento" data-args='["${a.id}"]'>✎</button>` : ''}</td>
           </tr>`;
         }).join('')}
       </tbody>
@@ -1823,6 +1911,316 @@ function pageClienteDetalhe(){
 }
 
 function backToClientList(){ state.selectedClientId=null; render(); }
+
+/* ============================================================
+   CRONOGRAMA / SPRINT DO CLIENTE — ciclo de trabalho com data livre +
+   backlog de itens (Backlog -> Em andamento -> Concluído). GDR + liderança
+   (exceto RMO) gerenciam; todo mundo visualiza.
+   ============================================================ */
+function prioridadeBadge(p){
+  if (p==='alta') return `<span class="badge badge-danger">Alta</span>`;
+  if (p==='media') return `<span class="badge badge-warn">Média</span>`;
+  return `<span class="badge badge-muted">Baixa</span>`;
+}
+function renderSprintCliente(c, u, canEdit){
+  const sprintAtual = SPRINTS.find(s=>String(s.clienteId)===String(c.id) && s.status==='aberto');
+  const backlogGeral = SPRINT_ITENS.filter(i=>String(i.clienteId)===String(c.id) && !i.sprintId).sort((a,b)=>new Date(b.criadoEm)-new Date(a.criadoEm));
+
+  let cardSprint;
+  if (!sprintAtual){
+    cardSprint = `
+    <div class="panel" style="margin-bottom:18px;">
+      <div class="panel-body" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+        <div class="cell-sub">Nenhum sprint aberto pra esse cliente no momento.</div>
+        ${canEdit? `<button class="btn btn-primary btn-sm" data-action="abrirModalNovoSprint" data-args='["${c.id}"]'>+ Novo sprint</button>` : ''}
+      </div>
+    </div>`;
+  } else {
+    const itensSprint = SPRINT_ITENS.filter(i=>i.sprintId===sprintAtual.id);
+    const horasPlanejadas = itensSprint.reduce((s,i)=>s+(i.horasEstimadas||0),0);
+    const horasEntregues = itensSprint.filter(i=>i.status==='concluido').reduce((s,i)=>s+(i.horasEstimadas||0),0);
+    const pct = horasPlanejadas>0 ? Math.min(100, Math.round(horasEntregues/horasPlanejadas*100)) : 0;
+    const hojeStr = isoDate(new Date());
+    const atrasado = hojeStr > sprintAtual.dataFim;
+    cardSprint = `
+    <div class="panel" style="margin-bottom:18px;">
+      <div class="panel-body">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:12px;">
+          <div>
+            <div class="cell-sub" style="margin-bottom:4px;">Sprint atual · ${fmtDate(sprintAtual.dataInicio)} a ${fmtDate(sprintAtual.dataFim)}</div>
+            <div class="cell-strong" style="font-size:15px;">${sprintAtual.objetivo || '(sem objetivo definido)'}</div>
+          </div>
+          <span class="badge ${atrasado?'badge-danger':'badge-ok'}">${atrasado?'Atrasado':'Em dia'}</span>
+        </div>
+        <div class="progress" style="margin-bottom:8px;"><i style="width:${pct}%"></i></div>
+        <div class="cell-sub">${fmtH(horasEntregues)}h entregues de ${fmtH(horasPlanejadas)}h planejadas · ${itensSprint.length} item(ns) no sprint</div>
+        ${canEdit? `<div style="margin-top:14px;"><button class="btn btn-ghost btn-sm" data-action="abrirModalEncerrarSprint" data-args='["${sprintAtual.id}"]'>🏁 Encerrar sprint</button></div>` : ''}
+      </div>
+    </div>`;
+  }
+
+  const colBacklog = sprintAtual ? SPRINT_ITENS.filter(i=>i.sprintId===sprintAtual.id && i.status==='backlog') : [];
+  const colAndamento = sprintAtual ? SPRINT_ITENS.filter(i=>i.sprintId===sprintAtual.id && i.status==='em_andamento') : [];
+  const colConcluido = sprintAtual ? SPRINT_ITENS.filter(i=>i.sprintId===sprintAtual.id && i.status==='concluido') : [];
+
+  const cardItem = (i, opcoes) => `
+    <div class="panel" style="margin-bottom:8px;">
+      <div class="panel-body" style="padding:10px 12px;">
+        <div style="${i.status==='concluido'?'text-decoration:line-through;color:var(--text-2);':''}font-size:13px;margin-bottom:6px;">${i.titulo}</div>
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+          ${prioridadeBadge(i.prioridade)}
+          ${i.horasEstimadas? `<span class="cell-sub">${fmtH(i.horasEstimadas)}h</span>` : ''}
+          ${opcoes}
+        </div>
+      </div>
+    </div>`;
+
+  const boardHtml = !sprintAtual ? '' : `
+  <div class="grid" style="grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:18px;">
+    <div>
+      <div class="cell-sub" style="margin-bottom:8px;font-weight:600;">Backlog do sprint (${colBacklog.length})</div>
+      ${colBacklog.map(i=>cardItem(i, canEdit?`<button class="btn btn-ghost btn-sm" style="margin-left:auto;" data-action="mudarStatusItemSprint" data-args='["${i.id}","em_andamento"]'>Iniciar →</button>`:'')).join('') || `<div class="cell-sub">Vazio</div>`}
+    </div>
+    <div>
+      <div class="cell-sub" style="margin-bottom:8px;font-weight:600;">Em andamento (${colAndamento.length})</div>
+      ${colAndamento.map(i=>cardItem(i, canEdit?`<button class="btn btn-ghost btn-sm" style="margin-left:auto;" data-action="mudarStatusItemSprint" data-args='["${i.id}","concluido"]'>Concluir →</button>`:'')).join('') || `<div class="cell-sub">Vazio</div>`}
+    </div>
+    <div>
+      <div class="cell-sub" style="margin-bottom:8px;font-weight:600;">Concluído (${colConcluido.length})</div>
+      ${colConcluido.map(i=>cardItem(i,'')).join('') || `<div class="cell-sub">Vazio</div>`}
+    </div>
+  </div>`;
+
+  const backlogGeralHtml = `
+  <div class="panel">
+    <div class="panel-head">
+      <h3>Backlog geral</h3>
+      ${canEdit? `<button class="btn btn-ghost btn-sm" data-action="abrirModalNovoItemBacklog" data-args='["${c.id}"]'>+ Adicionar ao backlog</button>` : ''}
+    </div>
+    <div class="panel-body" style="padding:0;${backlogGeral.length>5?'max-height:340px;overflow:auto;':''}">
+      ${backlogGeral.length===0 ? emptyState('📋','Nada no backlog ainda.') : `
+      <table>
+        <thead><tr><th>Item</th><th>Prioridade</th><th>Estimativa</th><th></th></tr></thead>
+        <tbody>
+          ${backlogGeral.map(i=>`<tr class="tr-hover">
+            <td class="cell-strong">${i.titulo}</td>
+            <td>${prioridadeBadge(i.prioridade)}</td>
+            <td class="cell-sub">${i.horasEstimadas?fmtH(i.horasEstimadas)+'h':'—'}</td>
+            <td style="text-align:right;white-space:nowrap;">
+              ${canEdit && sprintAtual ? `<button class="btn btn-ghost btn-sm" data-action="moverItemProSprintAtual" data-args='["${i.id}"]'>→ Mover pro sprint</button>` : ''}
+              ${canEdit ? `<button class="btn btn-ghost btn-sm" data-action="excluirItemBacklog" data-args='["${i.id}"]'>🗑</button>` : ''}
+            </td>
+          </tr>`).join('')}
+        </tbody>
+      </table>`}
+    </div>
+  </div>`;
+
+  return cardSprint + boardHtml + backlogGeralHtml;
+}
+
+function abrirModalNovoSprint(clienteId){
+  const c = clientById(clienteId);
+  if(!c) return;
+  const hoje = new Date();
+  const daquiDezDias = new Date(hoje); daquiDezDias.setDate(daquiDezDias.getDate()+10);
+  state.modal = { type:'novoSprint', payload: { clienteId, clienteNome:c.nome, dataInicio: isoDate(hoje), dataFim: isoDate(daquiDezDias), objetivo:'' } };
+  state.sprintErr = null;
+  render();
+}
+function modalNovoSprint(){
+  const p = state.modal.payload;
+  return `
+  <div class="modal-bg" data-action="closeModalBg">
+    <div class="modal" style="max-width:460px;">
+      <div class="modal-head">
+        <h3>Novo sprint — ${p.clienteNome}</h3>
+        <button class="modal-close" data-action="closeModal" data-args='[]'>✕</button>
+      </div>
+      <div class="modal-body">
+        ${state.sprintErr? `<div class="err-box">${state.sprintErr}</div>`:''}
+        <div class="field-row">
+          <div class="field"><label>Data de início</label><input id="spr-inicio" type="date" value="${p.dataInicio}"></div>
+          <div class="field"><label>Data de fim</label><input id="spr-fim" type="date" value="${p.dataFim}"></div>
+        </div>
+        <div class="field">
+          <label>Objetivo do sprint</label>
+          <input id="spr-objetivo" type="text" placeholder="Ex: Fechar reforma tributária do módulo fiscal" value="${p.objetivo}">
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn btn-ghost" data-action="closeModal" data-args='[]'>Cancelar</button>
+        <button type="button" class="btn btn-primary" data-action="criarSprint" data-args='[]' ${state.salvandoSprint?'disabled':''}>${state.salvandoSprint?'Criando…':'Criar sprint'}</button>
+      </div>
+    </div>
+  </div>`;
+}
+async function criarSprint(){
+  if(state.salvandoSprint) return;
+  const p = state.modal.payload;
+  const dataInicio = document.getElementById('spr-inicio').value;
+  const dataFim = document.getElementById('spr-fim').value;
+  const objetivo = document.getElementById('spr-objetivo').value.trim();
+  if(!dataInicio || !dataFim){ state.sprintErr = 'Informe as duas datas.'; render(); return; }
+  if(dataFim < dataInicio){ state.sprintErr = 'A data de fim não pode ser antes da data de início.'; render(); return; }
+  if(SPRINTS.some(s=>s.clienteId===p.clienteId && s.status==='aberto')){ state.sprintErr = 'Já existe um sprint aberto pra esse cliente — encerre ele antes de criar outro.'; render(); return; }
+
+  state.salvandoSprint = true; state.sprintErr = null; render();
+  try{
+    const { data, error } = await sb.from('crm_sprints').insert({
+      cliente_id: p.clienteId, data_inicio: dataInicio, data_fim: dataFim, objetivo: objetivo || null,
+      status: 'aberto', criado_por: state.authUser.id,
+    }).select().single();
+    if(error){ state.sprintErr = 'Erro ao criar: ' + error.message; return; }
+    SPRINTS.push({ id:data.id, clienteId:data.cliente_id, dataInicio:data.data_inicio, dataFim:data.data_fim, objetivo:data.objetivo, status:data.status, criadoPor:data.criado_por, criadoEm:data.criado_em, encerradoPor:null, encerradoEm:null });
+    toast('Sprint criado.');
+    state.modal = null;
+  } finally {
+    state.salvandoSprint = false; render();
+  }
+}
+
+function abrirModalEncerrarSprint(sprintId){
+  const s = SPRINTS.find(x=>x.id===sprintId);
+  if(!s) return;
+  state.modal = { type:'encerrarSprint', payload: { sprintId, oQueFuncionou:'', oQueMelhorar:'', acaoProximo:'' } };
+  state.sprintErr = null;
+  render();
+}
+function modalEncerrarSprint(){
+  const p = state.modal.payload;
+  return `
+  <div class="modal-bg" data-action="closeModalBg">
+    <div class="modal" style="max-width:460px;">
+      <div class="modal-head">
+        <h3>Encerrar sprint — retrospectiva rápida</h3>
+        <button class="modal-close" data-action="closeModal" data-args='[]'>✕</button>
+      </div>
+      <div class="modal-body">
+        ${state.sprintErr? `<div class="err-box">${state.sprintErr}</div>`:''}
+        <div class="cell-sub" style="margin-bottom:14px;">Opcional, mas ajuda a alimentar o EBR e o Status Report depois.</div>
+        <div class="field"><label>O que funcionou bem?</label><textarea id="spr-retro1" rows="2"></textarea></div>
+        <div class="field"><label>O que pode melhorar?</label><textarea id="spr-retro2" rows="2"></textarea></div>
+        <div class="field"><label>Ação pro próximo ciclo</label><textarea id="spr-retro3" rows="2"></textarea></div>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn btn-ghost" data-action="closeModal" data-args='[]'>Cancelar</button>
+        <button type="button" class="btn btn-primary" data-action="encerrarSprint" data-args='[]' ${state.salvandoSprint?'disabled':''}>${state.salvandoSprint?'Encerrando…':'Encerrar sprint'}</button>
+      </div>
+    </div>
+  </div>`;
+}
+async function encerrarSprint(){
+  if(state.salvandoSprint) return;
+  const p = state.modal.payload;
+  const oQueFuncionou = document.getElementById('spr-retro1').value.trim();
+  const oQueMelhorar = document.getElementById('spr-retro2').value.trim();
+  const acaoProximo = document.getElementById('spr-retro3').value.trim();
+
+  state.salvandoSprint = true; state.sprintErr = null; render();
+  try{
+    const { error } = await sb.from('crm_sprints').update({
+      status: 'encerrado', encerrado_por: state.authUser.id, encerrado_em: new Date().toISOString(),
+      retro_o_que_funcionou: oQueFuncionou || null, retro_o_que_melhorar: oQueMelhorar || null, retro_acao_proximo: acaoProximo || null,
+    }).eq('id', p.sprintId);
+    if(error){ state.sprintErr = 'Erro ao encerrar: ' + error.message; return; }
+    const s = SPRINTS.find(x=>x.id===p.sprintId);
+    if(s){ Object.assign(s, { status:'encerrado', encerradoPor:state.authUser.id, encerradoEm:new Date().toISOString(), retroOQueFuncionou:oQueFuncionou, retroOQueMelhorar:oQueMelhorar, retroAcaoProximo:acaoProximo }); }
+    toast('Sprint encerrado.');
+    state.modal = null;
+  } finally {
+    state.salvandoSprint = false; render();
+  }
+}
+
+function abrirModalNovoItemBacklog(clienteId){
+  state.modal = { type:'novoItemBacklog', payload: { clienteId, titulo:'', prioridade:'media', horas:'' } };
+  state.sprintErr = null;
+  render();
+}
+function modalNovoItemBacklog(){
+  return `
+  <div class="modal-bg" data-action="closeModalBg">
+    <div class="modal" style="max-width:420px;">
+      <div class="modal-head">
+        <h3>Novo item no backlog</h3>
+        <button class="modal-close" data-action="closeModal" data-args='[]'>✕</button>
+      </div>
+      <div class="modal-body">
+        ${state.sprintErr? `<div class="err-box">${state.sprintErr}</div>`:''}
+        <div class="field"><label>Título *</label><input id="item-titulo" type="text" placeholder="Ex: Treinamento módulo compras"></div>
+        <div class="field-row">
+          <div class="field"><label>Prioridade</label>
+            <select id="item-prioridade">
+              <option value="alta">Alta</option>
+              <option value="media" selected>Média</option>
+              <option value="baixa">Baixa</option>
+            </select>
+          </div>
+          <div class="field"><label>Horas estimadas</label><input id="item-horas" type="number" min="0" step="0.5" placeholder="Ex: 6"></div>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn btn-ghost" data-action="closeModal" data-args='[]'>Cancelar</button>
+        <button type="button" class="btn btn-primary" data-action="criarItemBacklog" data-args='[]' ${state.salvandoSprint?'disabled':''}>${state.salvandoSprint?'Salvando…':'Adicionar'}</button>
+      </div>
+    </div>
+  </div>`;
+}
+async function criarItemBacklog(){
+  if(state.salvandoSprint) return;
+  const p = state.modal.payload;
+  const titulo = document.getElementById('item-titulo').value.trim();
+  const prioridade = document.getElementById('item-prioridade').value;
+  const horasRaw = document.getElementById('item-horas').value;
+  const horas = horasRaw ? parseFloat(horasRaw) : null;
+  if(!titulo){ state.sprintErr = 'Escreva um título pro item.'; render(); return; }
+
+  state.salvandoSprint = true; state.sprintErr = null; render();
+  try{
+    const { data, error } = await sb.from('crm_sprint_itens').insert({
+      cliente_id: p.clienteId, sprint_id: null, titulo, prioridade, horas_estimadas: horas,
+      status: 'backlog', criado_por: state.authUser.id,
+    }).select().single();
+    if(error){ state.sprintErr = 'Erro ao criar: ' + error.message; return; }
+    SPRINT_ITENS.push({ id:data.id, clienteId:data.cliente_id, sprintId:data.sprint_id, titulo:data.titulo, prioridade:data.prioridade, horasEstimadas:data.horas_estimadas===null?null:parseFloat(data.horas_estimadas), status:data.status, responsavelId:null, criadoPor:data.criado_por, criadoEm:data.criado_em, concluidoEm:null });
+    toast('Item adicionado ao backlog.');
+    state.modal = null;
+  } finally {
+    state.salvandoSprint = false; render();
+  }
+}
+
+async function moverItemProSprintAtual(itemId){
+  const i = SPRINT_ITENS.find(x=>x.id===itemId);
+  if(!i) return;
+  const sprintAtual = SPRINTS.find(s=>String(s.clienteId)===String(i.clienteId) && s.status==='aberto');
+  if(!sprintAtual){ toast('Não tem sprint aberto pra esse cliente.', 'err'); return; }
+  const { error } = await sb.from('crm_sprint_itens').update({ sprint_id: sprintAtual.id }).eq('id', itemId);
+  if(error){ toast('Erro: ' + error.message, 'err'); return; }
+  i.sprintId = sprintAtual.id;
+  toast('Item movido pro sprint atual.');
+  render();
+}
+async function mudarStatusItemSprint(itemId, novoStatus){
+  const i = SPRINT_ITENS.find(x=>x.id===itemId);
+  if(!i) return;
+  const payload = { status: novoStatus };
+  if(novoStatus==='concluido') payload.concluido_em = new Date().toISOString();
+  const { error } = await sb.from('crm_sprint_itens').update(payload).eq('id', itemId);
+  if(error){ toast('Erro: ' + error.message, 'err'); return; }
+  i.status = novoStatus;
+  if(novoStatus==='concluido') i.concluidoEm = payload.concluido_em;
+  render();
+}
+async function excluirItemBacklog(itemId){
+  if(!confirm('Remover esse item do backlog?')) return;
+  const { error } = await sb.from('crm_sprint_itens').delete().eq('id', itemId);
+  if(error){ toast('Erro ao excluir: ' + error.message, 'err'); return; }
+  SPRINT_ITENS = SPRINT_ITENS.filter(x=>x.id!==itemId);
+  toast('Item removido.');
+  render();
+}
 
 /* ============================================================
    EXTRAIR TEXTO DE AGENDAS — monta uma mensagem pronta com as agendas do
@@ -1907,6 +2305,242 @@ async function copiarTextoAgendas(){
   }
 }
 
+/* ============================================================
+   RELATÓRIO DE HORAS DO MÊS (CARTEIRA) — soma as horas aprovadas de cada
+   cliente da carteira visível (GDR: só a própria; liderança: todos) no
+   mês/ano real de hoje. "Nome: Xh" um por linha, ordenado por quem mais
+   consumiu primeiro.
+   ============================================================ */
+function gerarRelatorioHorasMes(){
+  const u = state.authUser;
+  let base = CLIENTS.filter(clienteAtivo);
+  if (u.role==='gdr') base = base.filter(c=>c.gdrId===u.id);
+
+  const hojeRef = new Date();
+  const linhas = base
+    .map(c => ({ nome: c.nome, horas: horasMesAtualDoCliente(c.id, hojeRef) }))
+    .filter(l => l.horas > 0)
+    .sort((a,b) => b.horas - a.horas);
+
+  const mesLabel = MESES_PT[hojeRef.getMonth()];
+  const corpo = linhas.length===0
+    ? 'Nenhuma hora lançada e aprovada pra nenhum cliente da carteira ainda esse mês.'
+    : linhas.map(l => `${l.nome}: ${fmtH(l.horas)}h`).join('\n');
+  const total = linhas.reduce((s,l)=>s+l.horas,0);
+
+  return `Horas lançadas em ${mesLabel}/${hojeRef.getFullYear()} — carteira:\n\n${corpo}${linhas.length>0?`\n\nTotal: ${fmtH(total)}h`:''}`;
+}
+function abrirModalRelatorioHorasMes(){
+  state.modal = { type:'relatorioHorasMes', payload: { texto: gerarRelatorioHorasMes() } };
+  render();
+}
+function modalRelatorioHorasMes(){
+  const p = state.modal.payload;
+  return `
+  <div class="modal-bg" data-action="closeModalBg">
+    <div class="modal" style="max-width:480px;">
+      <div class="modal-head">
+        <h3>Horas do mês — carteira</h3>
+        <button class="modal-close" data-action="closeModal" data-args='[]'>✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="cell-sub" style="margin-bottom:10px;">Soma as horas aprovadas de cada cliente, dentro do mês atual. Edite se precisar, depois copie.</div>
+        <textarea id="relatorio-horas-area" rows="14" style="width:100%;font-family:inherit;">${p.texto}</textarea>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn btn-ghost" data-action="closeModal" data-args='[]'>Fechar</button>
+        <button type="button" class="btn btn-primary" data-action="copiarRelatorioHorasMes" data-args='[]'>📋 Copiar texto</button>
+      </div>
+    </div>
+  </div>`;
+}
+async function copiarRelatorioHorasMes(){
+  const texto = document.getElementById('relatorio-horas-area').value;
+  try{
+    await navigator.clipboard.writeText(texto);
+    toast('Texto copiado.');
+  } catch(err){
+    const el = document.getElementById('relatorio-horas-area');
+    el.focus(); el.select();
+    toast('Não consegui copiar automaticamente — texto selecionado, use Ctrl+C.', 'err');
+  }
+}
+
+/* ============================================================
+   CRONOGRAMA DO CLIENTE — visão macro de fases/marcos (campos fixos,
+   boas práticas de gestão de projeto), junto com um resumo dos sprints já
+   executados. É um modal, diferente do Cronograma/Sprint que fica direto
+   na página (esse aqui é mais rápido de abrir/fechar, tipo um "raio-x").
+   ============================================================ */
+function faseStatusBadge(f){
+  const hojeStr = isoDate(new Date());
+  if (f.status==='concluido') return `<span class="badge badge-ok">Concluído</span>`;
+  if (f.dataFim && f.dataFim < hojeStr) return `<span class="badge badge-danger">Atrasado</span>`;
+  if (f.status==='em_andamento') return `<span class="badge badge-info">Em andamento</span>`;
+  return `<span class="badge badge-muted">Não iniciado</span>`;
+}
+function abrirModalCronograma(clienteId){
+  const c = clientById(clienteId);
+  if(!c) return;
+  state.modal = { type:'cronograma', payload: {
+    clienteId, clienteNome: c.nome, formAberto:false, editandoId:null,
+    faseTemp: { fase:'', dataInicio:'', dataFim:'', status:'nao_iniciado', responsavel:'', observacao:'' },
+  }};
+  state.cronogramaErr = null;
+  render();
+}
+function abrirFormNovaFase(){
+  state.modal.payload.formAberto = true;
+  state.modal.payload.editandoId = null;
+  state.modal.payload.faseTemp = { fase:'', dataInicio:'', dataFim:'', status:'nao_iniciado', responsavel:'', observacao:'' };
+  state.cronogramaErr = null;
+  render();
+}
+function abrirFormEditarFase(faseId){
+  const f = CRONOGRAMA_FASES.find(x=>x.id===faseId);
+  if(!f) return;
+  state.modal.payload.formAberto = true;
+  state.modal.payload.editandoId = faseId;
+  state.modal.payload.faseTemp = { fase:f.fase, dataInicio:f.dataInicio||'', dataFim:f.dataFim||'', status:f.status, responsavel:f.responsavel||'', observacao:f.observacao||'' };
+  state.cronogramaErr = null;
+  render();
+}
+function fecharFormFase(){
+  state.modal.payload.formAberto = false;
+  state.cronogramaErr = null;
+  render();
+}
+function modalCronograma(){
+  const p = state.modal.payload;
+  const fases = CRONOGRAMA_FASES.filter(f=>String(f.clienteId)===String(p.clienteId)).sort((a,b)=>(a.ordem-b.ordem) || (a.dataInicio||'').localeCompare(b.dataInicio||''));
+  const sprintsCliente = SPRINTS.filter(s=>String(s.clienteId)===String(p.clienteId)).sort((a,b)=>new Date(b.dataInicio)-new Date(a.dataInicio));
+
+  return `
+  <div class="modal-bg" data-action="closeModalBg">
+    <div class="modal" style="max-width:720px;">
+      <div class="modal-head">
+        <h3>🗓️ Cronograma — ${p.clienteNome}</h3>
+        <button class="modal-close" data-action="closeModal" data-args='[]'>✕</button>
+      </div>
+      <div class="modal-body" style="max-height:70vh;overflow:auto;">
+
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+          <h4 style="margin:0;font-size:14px;">Fases do projeto</h4>
+          ${!p.formAberto ? `<button class="btn btn-ghost btn-sm" data-action="abrirFormNovaFase" data-args='[]'>+ Nova fase</button>` : ''}
+        </div>
+
+        ${p.formAberto ? `
+        <div class="panel" style="margin-bottom:14px;">
+          <div class="panel-body">
+            ${state.cronogramaErr? `<div class="err-box" style="margin-bottom:10px;">${state.cronogramaErr}</div>`:''}
+            <div class="field"><label>Fase / Marco *</label><input id="cron-fase" type="text" placeholder="Ex: Diagnóstico e levantamento" value="${p.faseTemp.fase}"></div>
+            <div class="field-row">
+              <div class="field"><label>Data de início</label><input id="cron-data-inicio" type="date" value="${p.faseTemp.dataInicio}"></div>
+              <div class="field"><label>Data de fim</label><input id="cron-data-fim" type="date" value="${p.faseTemp.dataFim}"></div>
+            </div>
+            <div class="field-row">
+              <div class="field"><label>Status</label>
+                <select id="cron-status">
+                  <option value="nao_iniciado" ${p.faseTemp.status==='nao_iniciado'?'selected':''}>Não iniciado</option>
+                  <option value="em_andamento" ${p.faseTemp.status==='em_andamento'?'selected':''}>Em andamento</option>
+                  <option value="concluido" ${p.faseTemp.status==='concluido'?'selected':''}>Concluído</option>
+                </select>
+              </div>
+              <div class="field"><label>Responsável</label><input id="cron-responsavel" type="text" placeholder="Ex: Felipe (GDR) ou nome do cliente" value="${p.faseTemp.responsavel}"></div>
+            </div>
+            <div class="field"><label>Observação</label><textarea id="cron-observacao" rows="2">${p.faseTemp.observacao}</textarea></div>
+            <div style="display:flex;gap:8px;">
+              <button type="button" class="btn btn-ghost btn-sm" data-action="fecharFormFase" data-args='[]'>Cancelar</button>
+              <button type="button" class="btn btn-primary btn-sm" data-action="salvarFase" data-args='[]' ${state.salvandoFase?'disabled':''}>${state.salvandoFase?'Salvando…':(p.editandoId?'Salvar alterações':'Adicionar fase')}</button>
+            </div>
+          </div>
+        </div>` : ''}
+
+        ${fases.length===0 && !p.formAberto ? `<div class="panel">${emptyState('🗓️','Nenhuma fase cadastrada ainda.')}</div>` : fases.length>0 ? `
+        <div class="panel" style="margin-bottom:20px;"><div class="panel-body" style="padding:0;">
+          <table>
+            <thead><tr><th>Fase</th><th>Início</th><th>Fim</th><th>Status</th><th>Responsável</th><th></th></tr></thead>
+            <tbody>
+              ${fases.map(f=>`<tr class="tr-hover">
+                <td class="cell-strong">${f.fase}${f.observacao?`<div class="cell-sub">${f.observacao}</div>`:''}</td>
+                <td class="cell-sub">${f.dataInicio?fmtDate(f.dataInicio):'—'}</td>
+                <td class="cell-sub">${f.dataFim?fmtDate(f.dataFim):'—'}</td>
+                <td>${faseStatusBadge(f)}</td>
+                <td class="cell-sub">${f.responsavel||'—'}</td>
+                <td style="text-align:right;white-space:nowrap;">
+                  <button class="btn btn-ghost btn-sm" data-action="abrirFormEditarFase" data-args='["${f.id}"]'>✎</button>
+                  <button class="btn btn-ghost btn-sm" data-action="excluirFase" data-args='["${f.id}"]'>🗑</button>
+                </td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div></div>` : ''}
+
+        <h4 style="margin:0 0 10px;font-size:14px;">Sprints já executados</h4>
+        ${sprintsCliente.length===0 ? `<div class="cell-sub">Nenhum sprint criado pra esse cliente ainda.</div>` : `
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          ${sprintsCliente.map(s=>`
+          <div class="panel"><div class="panel-body" style="padding:10px 14px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+              <div>
+                <div class="cell-sub">${fmtDate(s.dataInicio)} a ${fmtDate(s.dataFim)}</div>
+                <div class="cell-strong" style="font-size:13px;">${s.objetivo||'(sem objetivo)'}</div>
+              </div>
+              <span class="badge ${s.status==='aberto'?'badge-info':'badge-ok'}">${s.status==='aberto'?'Aberto':'Encerrado'}</span>
+            </div>
+          </div></div>`).join('')}
+        </div>`}
+
+      </div>
+    </div>
+  </div>`;
+}
+async function salvarFase(){
+  if(state.salvandoFase) return;
+  const p = state.modal.payload;
+  const fase = document.getElementById('cron-fase').value.trim();
+  const dataInicio = document.getElementById('cron-data-inicio').value || null;
+  const dataFim = document.getElementById('cron-data-fim').value || null;
+  const status = document.getElementById('cron-status').value;
+  const responsavel = document.getElementById('cron-responsavel').value.trim();
+  const observacao = document.getElementById('cron-observacao').value.trim();
+  if(!fase){ state.cronogramaErr = 'Escreva o nome da fase/marco.'; render(); return; }
+
+  state.salvandoFase = true; state.cronogramaErr = null; render();
+  try{
+    if(p.editandoId){
+      const { error } = await sb.from('crm_cronograma_fases').update({
+        fase, data_inicio: dataInicio, data_fim: dataFim, status, responsavel: responsavel||null, observacao: observacao||null,
+        atualizado_em: new Date().toISOString(),
+      }).eq('id', p.editandoId);
+      if(error){ state.cronogramaErr = 'Erro ao salvar: ' + error.message; return; }
+      const f = CRONOGRAMA_FASES.find(x=>x.id===p.editandoId);
+      if(f) Object.assign(f, { fase, dataInicio, dataFim, status, responsavel, observacao });
+      toast('Fase atualizada.');
+    } else {
+      const maiorOrdem = Math.max(0, ...CRONOGRAMA_FASES.filter(f=>String(f.clienteId)===String(p.clienteId)).map(f=>f.ordem));
+      const { data, error } = await sb.from('crm_cronograma_fases').insert({
+        cliente_id: p.clienteId, fase, data_inicio: dataInicio, data_fim: dataFim, status,
+        responsavel: responsavel||null, observacao: observacao||null, ordem: maiorOrdem+1, criado_por: state.authUser.id,
+      }).select().single();
+      if(error){ state.cronogramaErr = 'Erro ao criar: ' + error.message; return; }
+      CRONOGRAMA_FASES.push({ id:data.id, clienteId:data.cliente_id, fase:data.fase, dataInicio:data.data_inicio, dataFim:data.data_fim, status:data.status, responsavel:data.responsavel, observacao:data.observacao, ordem:data.ordem, criadoPor:data.criado_por, criadoEm:data.criado_em, atualizadoEm:data.atualizado_em });
+      toast('Fase adicionada.');
+    }
+    p.formAberto = false;
+  } finally {
+    state.salvandoFase = false; render();
+  }
+}
+async function excluirFase(id){
+  if(!confirm('Excluir essa fase do cronograma?')) return;
+  const { error } = await sb.from('crm_cronograma_fases').delete().eq('id', id);
+  if(error){ toast('Erro ao excluir: ' + error.message, 'err'); return; }
+  CRONOGRAMA_FASES = CRONOGRAMA_FASES.filter(x=>x.id!==id);
+  toast('Fase removida.');
+  render();
+}
+
 function openClientForm(id){
   state.modal = {type:'client', payload: id ? {...clientById(id)} : {
     id:null, codigo:'', nome:'', pacote:'Conf. de tributos', tipoContrato:'Recorrente',
@@ -1983,6 +2617,7 @@ async function saveClient(){
     h_mes_gdr: numOrNull('cf-hmesgdr'),
     realizadas: numOrNull('cf-realizadas') ?? 0,
     status_contrato: document.getElementById('cf-status').value.trim(),
+    gdr_id: gdrId || null,
     gdr: gdrUser ? gdrUser.name : (p.gdrNome || null),
     risco_churn: txtOrNull('cf-riscochurn'),
     motivo_principal_churn: txtOrNull('cf-motivochurn'),
@@ -6344,18 +6979,18 @@ function pageLancamento(){
             <label>Descrição da atividade</label>
             <input id="mn-desc" placeholder="Ex: Treinamento presencial — módulo financeiro">
           </div>
-          <button class="btn btn-primary btn-block" type="button" data-action="submitManual" data-args='[]'>✓ Lançar e aprovar automaticamente</button>
+          <button class="btn btn-primary btn-block" type="button" data-action="submitManual" data-args='[]' ${state.salvandoLancamentoManual?'disabled':''}>${state.salvandoLancamentoManual?'Lançando…':'✓ Lançar e aprovar automaticamente'}</button>
         </div>
       </div>
     </div>
     <div class="panel">
-      <div class="panel-head"><h3>Meus lançamentos manuais</h3></div>
-      <div class="panel-body">
+      <div class="panel-head"><h3>Meus lançamentos manuais</h3><span class="badge badge-muted">${myManual.length}</span></div>
+      <div class="panel-body" style="${myManual.length>8?'max-height:420px;overflow:auto;':''}">
         ${myManual.length===0? emptyState('✎','Nenhum lançamento manual ainda.') :
-          myManual.slice(0,8).map(a=>{
+          myManual.map(a=>{
             const c=clientById(a.clienteId); const an=userById(a.analistaId);
             return `<div class="mini-row">
-              <span class="mk">${c?.nome} <span style="opacity:.6">· ${an?.name.split(' ')[0]}</span></span>
+              <span class="mk">${fmtDate(a.inicio)} <span style="opacity:.85;">· ${c?.nome}</span> <span style="opacity:.6">· ${an?.name.split(' ')[0]}</span></span>
               <span class="mv mono">${fmtH(a.horas)}h</span>
             </div>`;
           }).join('')}
@@ -6383,6 +7018,7 @@ async function consumeClientHours(clientId, horas){
 }
 
 async function submitManual(){
+  if(state.salvandoLancamentoManual) return; // já está salvando — ignora clique duplicado
   const clienteId = document.getElementById('mn-cliente').value;
   const analistaId = document.getElementById('mn-analista').value;
   const data = document.getElementById('mn-data').value;
@@ -6400,21 +7036,114 @@ async function submitManual(){
     horas, status: 'aprovada', criado_por: u.id, aprovado_por: u.id,
     descricao: desc || 'Lançamento manual de agenda.'
   };
-  const { data: inserted, error } = await sb.from('crm_agendas').insert(payload).select().single();
-  if(error){ toast('Erro ao salvar lançamento no Supabase: ' + error.message, 'err'); return; }
-
+  state.salvandoLancamentoManual = true;
+  render();
   try{
-    await consumeClientHours(clienteId, horas);
-  } catch(err){
-    toast('Agenda salva, mas houve erro ao atualizar o saldo do cliente: ' + err.message, 'err');
+    const { data: inserted, error } = await sb.from('crm_agendas').insert(payload).select().single();
+    if(error){ toast('Erro ao salvar lançamento no Supabase: ' + error.message, 'err'); return; }
+
+    try{
+      await consumeClientHours(clienteId, horas);
+    } catch(err){
+      toast('Agenda salva, mas houve erro ao atualizar o saldo do cliente: ' + err.message, 'err');
+    }
+    AGENDAS.unshift(mapAgendaRow(inserted));
+    await loadClients();
+    toast(`Lançamento registrado: ${fmtH(horas)}h aprovadas para ${c?.nome||'cliente'}.`);
+    document.getElementById('mn-horas').value='';
+    document.getElementById('mn-desc').value='';
+  } finally {
+    state.salvandoLancamentoManual = false;
+    render();
   }
-  AGENDAS.unshift(mapAgendaRow(inserted));
-  await loadClients();
-  toast(`Lançamento registrado: ${fmtH(horas)}h aprovadas para ${c?.nome||'cliente'}.`);
-  document.getElementById('mn-horas').value='';
-  document.getElementById('mn-desc').value='';
+}
+
+/* ============================================================
+   EDITAR LANÇAMENTO (Histórico de agendas do cliente) — corrige data,
+   analista, duração ou descrição de um lançamento já existente. Se a
+   duração mudar, ajusta o saldo do cliente pela DIFERENÇA (não recomeça
+   do zero), pra não descontar/creditar hora errada.
+   ============================================================ */
+function abrirModalEditarLancamento(agendaId){
+  const a = AGENDAS.find(x=>x.id===agendaId);
+  if(!a) return;
+  const dataOriginal = (a.inicio||'').slice(0,10);
+  state.modal = { type:'editarLancamento', payload: {
+    agendaId, clienteId: a.clienteId, clienteNome: clientById(a.clienteId)?.nome||'—',
+    horasOriginais: a.horas, data: dataOriginal, analistaId: a.analistaId, horas: a.horas, descricao: a.descricao||'',
+  }};
+  state.lancamentoErr = null;
   render();
 }
+function modalEditarLancamento(){
+  const p = state.modal.payload;
+  return `
+  <div class="modal-bg" data-action="closeModalBg">
+    <div class="modal" style="max-width:440px;">
+      <div class="modal-head">
+        <h3>Editar lançamento — ${p.clienteNome}</h3>
+        <button class="modal-close" data-action="closeModal" data-args='[]'>✕</button>
+      </div>
+      <div class="modal-body">
+        ${state.lancamentoErr? `<div class="err-box">${state.lancamentoErr}</div>`:''}
+        <div class="field-row">
+          <div class="field"><label>Data</label><input id="edl-data" type="date" value="${p.data}"></div>
+          <div class="field"><label>Duração (horas)</label><input id="edl-horas" type="number" min="0.25" step="0.25" value="${p.horas}"></div>
+        </div>
+        <div class="field">
+          <label>Analista executante</label>
+          <select id="edl-analista">
+            ${USERS.filter(u=>u.role==='analista' && (u.ativo!==false || u.id===p.analistaId)).sort((a,b)=>a.name.localeCompare(b.name)).map(u=>`<option value="${u.id}" ${p.analistaId===u.id?'selected':''}>${u.name}${u.ativo===false?' (inativo)':''}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field"><label>Descrição</label><input id="edl-desc" type="text" value="${p.descricao}"></div>
+      </div>
+      <div class="modal-foot">
+        <button type="button" class="btn btn-ghost" data-action="closeModal" data-args='[]'>Cancelar</button>
+        <button type="button" class="btn btn-primary" data-action="salvarEdicaoLancamento" data-args='[]' ${state.salvandoLancamento?'disabled':''}>${state.salvandoLancamento?'Salvando…':'Salvar alterações'}</button>
+      </div>
+    </div>
+  </div>`;
+}
+async function salvarEdicaoLancamento(){
+  if(state.salvandoLancamento) return;
+  const p = state.modal.payload;
+  const data = document.getElementById('edl-data').value;
+  const horas = parseFloat(document.getElementById('edl-horas').value);
+  const analistaId = document.getElementById('edl-analista').value;
+  const descricao = document.getElementById('edl-desc').value.trim();
+  if(!data){ state.lancamentoErr = 'Informe a data.'; render(); return; }
+  if(!horas || horas<=0){ state.lancamentoErr = 'A duração precisa ser maior que zero.'; render(); return; }
+  if(!analistaId){ state.lancamentoErr = 'Selecione o analista.'; render(); return; }
+
+  state.salvandoLancamento = true; state.lancamentoErr = null; render();
+  try{
+    const payload = {
+      analista_id: analistaId,
+      inicio: data+'T09:00:00', fim: data+'T'+(9+horas<=23? String(Math.floor(9+horas)).padStart(2,'0'):'23')+':00:00',
+      horas, descricao: descricao || 'Lançamento manual de agenda.',
+    };
+    const { error } = await sb.from('crm_agendas').update(payload).eq('id', p.agendaId);
+    if(error){ state.lancamentoErr = 'Erro ao salvar: ' + error.message; return; }
+
+    // Se a duração mudou, ajusta o saldo do cliente só pela diferença — se
+    // reaplicássemos o valor novo inteiro, contaria a hora duas vezes.
+    const delta = horas - p.horasOriginais;
+    if (Math.abs(delta) > 0.001){
+      try{ await consumeClientHours(p.clienteId, delta); }
+      catch(err){ toast('Lançamento salvo, mas houve erro ao ajustar o saldo do cliente: ' + err.message, 'err'); }
+      await loadClients();
+    }
+
+    const a = AGENDAS.find(x=>x.id===p.agendaId);
+    if(a) Object.assign(a, { analistaId, inicio: payload.inicio, fim: payload.fim, horas, descricao: payload.descricao });
+    toast('Lançamento atualizado.');
+    state.modal = null;
+  } finally {
+    state.salvandoLancamento = false; render();
+  }
+}
+
 
 /* ============================================================
    APROVAÇÕES (GDR / Coordenação / Gerência)
@@ -7258,6 +7987,12 @@ function renderModal(){
   if(state.modal.type==='rdaUrl') return modalRdaUrl();
   if(state.modal.type==='ebrUrl') return modalEbrUrl();
   if(state.modal.type==='textoAgendas') return modalTextoAgendas();
+  if(state.modal.type==='novoSprint') return modalNovoSprint();
+  if(state.modal.type==='encerrarSprint') return modalEncerrarSprint();
+  if(state.modal.type==='novoItemBacklog') return modalNovoItemBacklog();
+  if(state.modal.type==='cronograma') return modalCronograma();
+  if(state.modal.type==='editarLancamento') return modalEditarLancamento();
+  if(state.modal.type==='relatorioHorasMes') return modalRelatorioHorasMes();
   if(state.modal.type==='kanbanCard') return modalKanbanCard();
   return '';
 }
@@ -7735,6 +8470,11 @@ const ACTIONS = {
   abrirModalRdaUrl, salvarRdaUrl,
   abrirModalEbrUrl, salvarEbrUrl, setEbrOffsetCiclo, setEbrFiltroGdr, setEbrFiltroCliente, setEbrFiltroStatus, limparFiltrosEbr,
   abrirModalTextoAgendas, copiarTextoAgendas,
+  abrirModalNovoSprint, criarSprint, abrirModalEncerrarSprint, encerrarSprint,
+  abrirModalNovoItemBacklog, criarItemBacklog, moverItemProSprintAtual, mudarStatusItemSprint, excluirItemBacklog,
+  abrirModalCronograma, abrirFormNovaFase, abrirFormEditarFase, fecharFormFase, salvarFase, excluirFase,
+  abrirModalEditarLancamento, salvarEdicaoLancamento,
+  abrirModalRelatorioHorasMes, copiarRelatorioHorasMes,
   setRdaFiltroAnalista, setRdaFiltroGdr, setRdaFiltroCliente, setRdaFiltroStatus, setRdaOffsetCiclo, limparFiltrosRda,
   setKanbanFiltroResponsavel, setKanbanFiltroPrioridade, toggleKanbanSoMeus, limparFiltrosKanban,
   openKanbanCardModal, toggleKanbanResponsavel, salvarKanbanCard, excluirKanbanCard, adicionarComentarioKanban,
