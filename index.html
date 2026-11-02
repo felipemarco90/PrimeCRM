@@ -18,8 +18,10 @@
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--ink); font-family: "Inter", sans-serif; overflow-x: hidden; }
   table { border-collapse: collapse; width: 100%; }
-  th { text-align: left; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em; color: #8a988c; font-weight: 700; padding: 0 12px 10px; white-space: nowrap; }
-  td { padding: 12px; font-size: 13.5px; border-top: 1px solid #eef1ea; white-space: nowrap; }
+  th { text-align: left; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em; color: #8a988c; font-weight: 700; padding: 0 9px 10px; white-space: nowrap; }
+  td.wrap { white-space: normal; min-width: 190px; max-width: 300px; }
+  td.act { white-space: normal; min-width: 150px; }
+  td { padding: 11px 9px; font-size: 13.5px; border-top: 1px solid #eef1ea; white-space: nowrap; }
   tr:hover td { background: #fafcf7; }
   ::-webkit-scrollbar { height: 8px; width: 8px; }
   ::-webkit-scrollbar-thumb { background: #d6ddd1; border-radius: 8px; }
@@ -394,8 +396,8 @@ const fmtDate = iso => {
   const p = String(iso || "").slice(0, 10).split("-");
   return p.length === 3 ? p[2] + "/" + p[1] + "/" + p[0] : "—";
 };
-const MIN_QTY = 5;
-const MAX_TYPES = 3;
+const MIN_QTY = 1;
+const MAX_TYPES = 9999;
 
 /* ---------------------- icon set (SVG puro, sem dependências) ---------------------- */
 
@@ -1001,19 +1003,80 @@ const newId = () => window.crypto && crypto.randomUUID ? crypto.randomUUID() : "
   const r = Math.random() * 16 | 0;
   return (c === "x" ? r : r & 3 | 8).toString(16);
 });
-const openWhats = text => {
-  const url = "https://wa.me/" + CONTACT.whatsappDigits + (text ? "?text=" + encodeURIComponent(text) : "");
-  let w = null;
-  try {
-    w = window.open(url, "_blank", "noopener");
-  } catch (e) {}
-  if (!w) {
-    try {
-      window.top.location.href = url;
-    } catch (e) {
-      window.location.href = url;
+const phoneToWa = v => {
+  const d = String(v || "").replace(/\D/g, "");
+  return d.length === 10 || d.length === 11 ? "55" + d : d.length >= 12 ? d : "";
+};
+const afterSaleMessage = (name, number) => {
+  const first = String(name || "").trim().split(/\s+/)[0] || "";
+  return `Olá${first ? ", " + first : ""}! 😊
+
+Aqui é da *360 FOOD*. Obrigada pela sua compra! Ficamos muito felizes em fazer parte da sua rotina com mais praticidade e comida de verdade. 💚
+
+Para aproveitar suas refeições da melhor forma, veja o essencial:
+
+🧊 *Como conservar*
+• Suas refeições são entregues refrigeradas.
+• Na geladeira, consuma em até 3 dias.
+• Para guardar por mais tempo, leve ao freezer assim que receber, com a embalagem fechada (validade de até 30 dias).
+• Confira sempre a validade e as orientações do rótulo.
+
+🔥 *Como aquecer*
+• A embalagem serve para freezer e micro-ondas (a de feijão também).
+• Retire a tampa para aquecer.
+• Se precisar, mexa a comida no meio do aquecimento para o calor ficar igual.
+
+⚠️ *Cuidados importantes*
+• Não deixe descongelar em temperatura ambiente: descongele na geladeira e aqueça no micro-ondas.
+• Depois de descongelada, não congele de novo.
+
+Qualquer dúvida, é só responder esta mensagem. E depois conta pra gente o que você achou? O seu retorno ajuda muito! 🙏
+
+*360 FOOD* — Comida de verdade, todo dia. 💚
+(Se preferir não receber nossas mensagens, é só avisar.)`;
+};
+const openWhats = (text, toDigits) => {
+  const phone = toDigits || CONTACT.whatsappDigits;
+  const mobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || "");
+  const q = text ? "&text=" + encodeURIComponent(text) : "";
+  const webUrl = "https://api.whatsapp.com/send?phone=" + phone + q;
+  const go = (u, blank) => {
+    let w = null;
+    if (blank) {
+      try {
+        w = window.open(u, "_blank", "noopener");
+      } catch (e) {}
     }
+    if (!w) {
+      try {
+        window.top.location.href = u;
+      } catch (e) {
+        window.location.href = u;
+      }
+    }
+  };
+  if (mobile) {
+    go(webUrl, true);
+    return;
   }
+  // Computador: abre o aplicativo do WhatsApp (whatsapp://). Se não abrir, cai para o WhatsApp Web.
+  let left = false;
+  const mark = () => {
+    left = true;
+  };
+  window.addEventListener("blur", mark, {
+    once: true
+  });
+  document.addEventListener("visibilitychange", mark, {
+    once: true
+  });
+  try {
+    window.location.href = "whatsapp://send?phone=" + phone + q;
+  } catch (e) {}
+  setTimeout(() => {
+    window.removeEventListener("blur", mark);
+    if (!left) go(webUrl, true);
+  }, 1800);
 };
 const NET_MSG = "Sem conexão com o servidor. Verifique a internet e tente de novo.";
 async function rawFetch(path, opts) {
@@ -1076,6 +1139,7 @@ function errMessage(res, data) {
   if (data && typeof data === "object") {
     if (data.code === "P0001" && data.message) return data.message;
     if (data.code === "23505") return "Este registro já existe.";
+    if (data.code === "23514" || data.code === "42703" || data.code === "PGRST204" || data.code === "PGRST205" || data.code === "42P01") return "O banco de dados está desatualizado. Rode o arquivo 360food_schema.sql no Supabase (SQL Editor) e tente de novo.";
     if (data.code === "42501" || res.status === 401 || res.status === 403) return "Sem permissão para esta ação. Entre novamente no painel.";
   }
   return "Não foi possível concluir agora. Tente de novo em instantes.";
@@ -1138,6 +1202,86 @@ async function isStaffNow() {
   const rows = await sb("/rest/v1/f360_staff?select=user_id");
   return Array.isArray(rows) && rows.length > 0;
 }
+const PHOTO_BUCKET = "f360-meals";
+async function compressImage(file) {
+  if (!file || !/^image\//.test(file.type)) throw new Error("Escolha um arquivo de imagem (JPG, PNG ou WebP).");
+  let bmp;
+  try {
+    bmp = await createImageBitmap(file, {
+      imageOrientation: "from-image"
+    });
+  } catch (e) {
+    throw new Error("Não foi possível ler esta imagem.");
+  }
+  const MAX = 640,
+    k = Math.min(1, MAX / Math.max(bmp.width, bmp.height));
+  const w = Math.max(1, Math.round(bmp.width * k)),
+    h = Math.max(1, Math.round(bmp.height * k));
+  const cv = document.createElement("canvas");
+  cv.width = w;
+  cv.height = h;
+  const cx = cv.getContext("2d");
+  cx.fillStyle = "#fff";
+  cx.fillRect(0, 0, w, h);
+  cx.drawImage(bmp, 0, 0, w, h);
+  const toBlob = (type, q) => new Promise(res => cv.toBlob(res, type, q));
+  let blob = await toBlob("image/webp", 0.72);
+  if (!blob || blob.type !== "image/webp") blob = await toBlob("image/jpeg", 0.72);
+  if (!blob) throw new Error("Não foi possível preparar a imagem.");
+  return blob;
+}
+async function uploadMealPhoto(mealId, blob) {
+  const ext = blob.type === "image/webp" ? "webp" : "jpg";
+  const path = mealId + "-" + Date.now() + "." + ext;
+  const doPost = () => fetch(SB_URL + "/storage/v1/object/" + PHOTO_BUCKET + "/" + path, {
+    method: "POST",
+    headers: {
+      apikey: SB_KEY,
+      Authorization: "Bearer " + (session && session.access_token),
+      "Content-Type": blob.type
+    },
+    body: blob
+  });
+  let res;
+  try {
+    res = await doPost();
+    if (res.status === 401 && (await refreshSession())) res = await doPost();
+  } catch (e) {
+    throw new Error(NET_MSG);
+  }
+  if (!res.ok) {
+    try {
+      console.error("Storage", res.status, await res.text());
+    } catch (e) {}
+    throw new Error(res.status === 400 || res.status === 404 ? "O armazenamento de fotos não está configurado. Rode o 360food_schema.sql no Supabase." : "Não foi possível enviar a foto.");
+  }
+  return SB_URL + "/storage/v1/object/public/" + PHOTO_BUCKET + "/" + path;
+}
+async function deleteMealPhoto(url) {
+  const marker = "/object/public/" + PHOTO_BUCKET + "/";
+  const i = String(url || "").indexOf(marker);
+  if (i < 0) return;
+  try {
+    await fetch(SB_URL + "/storage/v1/object/" + PHOTO_BUCKET + "/" + url.slice(i + marker.length), {
+      method: "DELETE",
+      headers: {
+        apikey: SB_KEY,
+        Authorization: "Bearer " + (session && session.access_token)
+      }
+    });
+  } catch (e) {}
+}
+const normUrl = u => {
+  const t = String(u || "").trim();
+  return !t ? "" : /^https?:\/\//i.test(t) ? t : "https://" + t;
+};
+const fmtUnitCost = v => new Intl.NumberFormat("pt-BR", {
+  style: "currency",
+  currency: "BRL",
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 4
+}).format(v);
+const unitCostOf = x => num(x.packQty) > 0 ? num(x.cost) / num(x.packQty) : 0;
 const num = v => {
   const n = parseFloat(v);
   return isFinite(n) ? n : 0;
@@ -1155,6 +1299,7 @@ const mapMeal = {
     cost: num(r.cost),
     active: !!r.active,
     ingredients: r.ingredients || [],
+    photo: r.photo_url || "",
     sortOrder: r.sort_order
   }),
   to: m => ({
@@ -1169,6 +1314,7 @@ const mapMeal = {
     cost: num(m.cost),
     active: !!m.active,
     ingredients: m.ingredients || [],
+    photo_url: m.photo || "",
     sort_order: m.sortOrder == null ? 999 : m.sortOrder
   })
 };
@@ -1197,14 +1343,20 @@ const mapStock = {
     name: r.name,
     qty: num(r.qty),
     min: num(r.min_qty),
-    unit: r.unit || "un"
+    unit: r.unit || "un",
+    cost: num(r.cost),
+    packQty: num(r.pack_qty) > 0 ? num(r.pack_qty) : 1,
+    url: r.buy_url || ""
   }),
   to: x => ({
     id: x.id,
     name: x.name,
     qty: num(x.qty),
     min_qty: num(x.min),
-    unit: x.unit || "un"
+    unit: x.unit || "un",
+    cost: num(x.cost),
+    pack_qty: num(x.packQty) > 0 ? num(x.packQty) : 1,
+    buy_url: normUrl(x.url)
   })
 };
 const mapOrder = {
@@ -1218,6 +1370,8 @@ const mapOrder = {
     items: r.items || [],
     total: num(r.total),
     status: r.status,
+    payment: r.payment || "Não Pago",
+    afterSale: r.after_sale_at || null,
     source: r.source
   }),
   to: o => ({
@@ -1228,6 +1382,8 @@ const mapOrder = {
     items: o.items || [],
     total: num(o.total),
     status: o.status,
+    payment: o.payment || "Não Pago",
+    after_sale_at: o.afterSale || null,
     order_date: o.date || todayISO(),
     source: o.source || "painel"
   })
@@ -1325,7 +1481,7 @@ const makeDifferentiators = (visible, prices) => [{
 }, {
   icon: "store",
   title: "Você também escolhe",
-  text: "Prefere decidir? No Monte o seu você escolhe as marmitas que quiser, a partir de 5 unidades."
+  text: "Prefere decidir? No Monte o seu você escolhe as marmitas que quiser, na quantidade que quiser."
 }];
 const makeFaqs = (prices, visible) => {
   const has = id => visible.some(l => l.id === id);
@@ -1346,16 +1502,27 @@ const makeFaqs = (prices, visible) => {
     a: "Para quem busca mais legumes, equilíbrio e sabor no dia a dia, como pessoas com predisposição a diabetes e outros problemas de saúde. O cardápio é elaborado pela nutricionista, mas não substitui o acompanhamento médico."
   }] : []), {
     q: "Posso escolher só as marmitas que eu quero?",
-    a: `Sim, no Monte o seu: mínimo de ${MIN_QTY} marmitas, com até ${MAX_TYPES} sabores diferentes por pedido. Sem plano e sem mensalidade.`
+    a: `Sim, no Monte o seu você escolhe os pratos e a quantidade que quiser, sem mínimo e sem limite de sabores. Sem plano e sem mensalidade.`
   }];
 };
-const STATUS_FLOW = ["Pendente", "Em preparo", "Congelado", "Entregue"];
+const STATUS_FLOW = ["Pendente", "Encomendado", "Em preparo", "Congelado", "Aguardando Entrega", "Aguardando Retirada", "Entregue"];
+const NEXT_STATUS = {
+  Pendente: "Em preparo",
+  Encomendado: "Em preparo",
+  "Em preparo": "Congelado",
+  Congelado: "Aguardando Entrega",
+  "Aguardando Entrega": "Entregue",
+  "Aguardando Retirada": "Entregue"
+};
 const statusColor = {
   Pendente: "#e8833a",
   "Em preparo": "#3f7fbf",
   Congelado: "#3fa7bf",
   Entregue: "#4a9a5a",
-  Cancelado: "#d6483f"
+  Cancelado: "#d6483f",
+  Encomendado: "#8a6fd0",
+  "Aguardando Entrega": "#d9a441",
+  "Aguardando Retirada": "#c76f8f"
 };
 const NAV = [{
   id: "dashboard",
@@ -1381,6 +1548,10 @@ const NAV = [{
   id: "stock",
   label: "Estoque",
   icon: "warehouse"
+}, {
+  id: "shopping",
+  label: "Lista de compras",
+  icon: "clipboardCheck"
 }, {
   id: "finance",
   label: "Financeiro",
@@ -1657,6 +1828,7 @@ function App() {
   const [loadErr, setLoadErr] = useState("");
   const [staffEmail, setStaffEmail] = useState("");
   const [packPrices, setPackPricesState] = useState(DEFAULT_PACK_PRICES);
+  const [specs, setSpecs] = useState({});
   const toastTimer = useRef(null);
   const showToast = msg => {
     setToast(msg);
@@ -1683,7 +1855,12 @@ function App() {
     setPackPricesState(prices);
   };
   const loadStaff = async () => {
-    const [c, o, st, ex] = await Promise.all([sb("/rest/v1/f360_customers?select=*&order=created_at.desc"), sb("/rest/v1/f360_orders?select=*&order=order_date.desc,created_at.desc&limit=1000"), sb("/rest/v1/f360_stock?select=*&order=name.asc"), sb("/rest/v1/f360_expenses?select=*&order=expense_date.desc,created_at.desc")]);
+    const [c, o, st, ex, sp] = await Promise.all([sb("/rest/v1/f360_customers?select=*&order=created_at.desc"), sb("/rest/v1/f360_orders?select=*&order=order_date.desc,created_at.desc&limit=1000"), sb("/rest/v1/f360_stock?select=*&order=name.asc"), sb("/rest/v1/f360_expenses?select=*&order=expense_date.desc,created_at.desc"), sb("/rest/v1/f360_meal_specs?select=*")]);
+    const sm = {};
+    sp.forEach(r => {
+      sm[r.meal_id] = r.items || [];
+    });
+    setSpecs(sm);
     replaceClients(c.map(mapClient.from));
     replaceOrders(o.map(mapOrder.from));
     replaceStock(st.map(mapStock.from));
@@ -1754,9 +1931,26 @@ function App() {
     replaceOrders([]);
     replaceStock([]);
     replaceExpenses([]);
+    setSpecs({});
     try {
       await loadPublic();
     } catch (e) {}
+  };
+  const saveSpec = (mealId, items) => {
+    setSpecs(p => ({
+      ...p,
+      [mealId]: items
+    }));
+    sb("/rest/v1/f360_meal_specs?on_conflict=meal_id", {
+      method: "POST",
+      headers: {
+        Prefer: "resolution=merge-duplicates,return=minimal"
+      },
+      body: [{
+        meal_id: mealId,
+        items
+      }]
+    }).catch(e => saveFail(e));
   };
   const setPackPrices = next => {
     const prev = packPrices;
@@ -1778,7 +1972,7 @@ function App() {
     });
   };
   const kpis = useMemo(() => {
-    const valid = orders.filter(o => o.status !== "Cancelado");
+    const valid = orders.filter(o => o.status !== "Cancelado" && o.payment === "Pago");
     const revenue = valid.reduce((s, o) => s + o.total, 0);
     const active = orders.filter(o => o.status !== "Entregue" && o.status !== "Cancelado").length;
     const activeClients = clients.filter(c => c.status === "Ativo").length;
@@ -1810,7 +2004,7 @@ function App() {
       });
     }
     orders.forEach(o => {
-      if (o.status === "Cancelado") return;
+      if (o.status === "Cancelado" || o.payment !== "Pago") return;
       const r = out.find(x => x.key === String(o.date).slice(0, 7));
       if (r) r.receita += o.total;
     });
@@ -1822,11 +2016,20 @@ function App() {
   }, [orders, expenses]);
   const expenseBreakdown = useMemo(() => {
     const ym = todayISO().slice(0, 7);
-    return EXPENSE_CATS.map(c => ({
-      name: c.name,
-      color: c.color,
-      value: expenses.filter(e => e.category === c.name && String(e.date).slice(0, 7) === ym).reduce((s, e) => s + e.amount, 0)
-    })).filter(c => c.value > 0);
+    const PAL = ["#3f7fbf", "#3fa7bf", "#b06fd0", "#d9a441", "#5aa07a", "#c76f8f", "#7c8a7e"];
+    const tot = {};
+    expenses.forEach(e => {
+      if (String(e.date).slice(0, 7) === ym) tot[e.category] = (tot[e.category] || 0) + e.amount;
+    });
+    let extra = 0;
+    return Object.keys(tot).map(name => {
+      const d = EXPENSE_CATS.find(c => c.name === name);
+      return {
+        name,
+        color: d ? d.color : PAL[extra++ % PAL.length],
+        value: tot[name]
+      };
+    }).sort((a, b) => b.value - a.value);
   }, [expenses]);
   const lowStock = stock.filter(s => s.qty < s.min);
   const ordersByStatus = useMemo(() => {
@@ -1843,10 +2046,9 @@ function App() {
   const cycleStatus = id => {
     setOrders(prev => prev.map(o => {
       if (o.id !== id) return o;
-      const idx = STATUS_FLOW.indexOf(o.status);
       return {
         ...o,
-        status: STATUS_FLOW[Math.min(idx + 1, STATUS_FLOW.length - 1)]
+        status: NEXT_STATUS[o.status] || o.status
       };
     }));
   };
@@ -2264,6 +2466,7 @@ function App() {
     orders: orders,
     showToast: showToast
   }), view === "orders" && /*#__PURE__*/React.createElement(Orders, {
+    clients: clients,
     orders: orders,
     setOrders: setOrders,
     cycleStatus: cycleStatus,
@@ -2272,6 +2475,8 @@ function App() {
     meals: meals,
     setMeals: setMeals,
     stock: stock,
+    specs: specs,
+    saveSpec: saveSpec,
     showToast: showToast
   }), view === "menu" && /*#__PURE__*/React.createElement(MenuPricing, {
     meals: meals,
@@ -2279,15 +2484,18 @@ function App() {
     packPrices: packPrices,
     setPackPrices: setPackPrices,
     showToast: showToast
+  }), view === "shopping" && /*#__PURE__*/React.createElement(ShoppingList, {
+    orders: orders,
+    meals: meals,
+    specs: specs,
+    showToast: showToast
   }), view === "stock" && /*#__PURE__*/React.createElement(Stock, {
     stock: stock,
     setStock: setStock,
     restock: restock,
     showToast: showToast
   }), view === "finance" && /*#__PURE__*/React.createElement(Finance, {
-    kpis: kpis,
-    monthly: monthly,
-    expenseBreakdown: expenseBreakdown,
+    orders: orders,
     expenses: expenses,
     setExpenses: setExpenses,
     showToast: showToast
@@ -2631,6 +2839,30 @@ function LeadModal({
     }
   }, busy ? "Enviando…" : hasItems ? "Confirmar pedido" : "Quero receber contato"))));
 }
+function MealPhoto({
+  src,
+  alt,
+  size
+}) {
+  const [bad, setBad] = useState(false);
+  if (bad) return null;
+  return /*#__PURE__*/React.createElement("img", {
+    src: src,
+    alt: alt,
+    loading: "lazy",
+    width: size,
+    height: size,
+    onError: () => setBad(true),
+    style: {
+      width: size,
+      height: size,
+      objectFit: "cover",
+      borderRadius: 12,
+      flexShrink: 0,
+      background: "#f1f6ee"
+    }
+  });
+}
 
 /* ============================== ORDER WIZARD (pedido guiado, textos grandes) ============================== */
 
@@ -2832,7 +3064,7 @@ function OrderWizard({
     setPackId(pk.id);
     setSel([]);
     setStep("pack");
-  }, i === 0)), optionBtn("utensils", "Escolher as minhas", `Você escolhe os pratos · a partir de ${MIN_QTY} marmitas`, () => {
+  }, i === 0)), optionBtn("utensils", "Escolher as minhas", "Você escolhe os pratos e a quantidade", () => {
     setOnly(null);
     setStep("escolher");
   }))), step === "pack" && pack && /*#__PURE__*/React.createElement("div", null, back("inicio"), title(pack.name, `Escolha ${PACK_SIZE} sabores diferentes por ${fmt(packPrice)}.`), pack.note && /*#__PURE__*/React.createElement("div", {
@@ -2890,13 +3122,18 @@ function OrderWizard({
       name: "check",
       size: 22,
       color: "#fff"
-    })), /*#__PURE__*/React.createElement("span", {
+    })), m.photo && /*#__PURE__*/React.createElement(MealPhoto, {
+      src: m.photo,
+      alt: m.name,
+      size: 64
+    }), /*#__PURE__*/React.createElement("span", {
       style: {
         fontFamily: "Poppins, sans-serif",
         fontWeight: 700,
         fontSize: 18,
         lineHeight: 1.3,
-        color: "#16331f"
+        color: "#16331f",
+        flex: 1
       }
     }, m.name));
   })), /*#__PURE__*/React.createElement("div", {
@@ -2940,7 +3177,7 @@ function OrderWizard({
   }, "Continuar ", /*#__PURE__*/React.createElement(Icon, {
     name: "arrowRight",
     size: 20
-  })))), step === "escolher" && /*#__PURE__*/React.createElement("div", null, back("inicio"), title(only ? lineById(only).name : "Escolha suas marmitas", `Escolha no mínimo ${MIN_QTY} marmitas, de até ${MAX_TYPES} pratos diferentes.`), only && /*#__PURE__*/React.createElement("button", {
+  })))), step === "escolher" && /*#__PURE__*/React.createElement("div", null, back("inicio"), title(only ? lineById(only).name : "Escolha suas marmitas", "Toque no + para escolher quantas quiser, dos pratos que quiser."), only && /*#__PURE__*/React.createElement("button", {
     type: "button",
     onClick: () => setOnly(null),
     style: {
@@ -2975,12 +3212,22 @@ function OrderWizard({
       }
     }, /*#__PURE__*/React.createElement("div", {
       style: {
+        display: "flex",
+        gap: 12,
+        alignItems: "center"
+      }
+    }, m.photo && /*#__PURE__*/React.createElement(MealPhoto, {
+      src: m.photo,
+      alt: m.name,
+      size: 72
+    }), /*#__PURE__*/React.createElement("div", {
+      style: {
         fontFamily: "Poppins, sans-serif",
         fontWeight: 700,
         fontSize: 18,
         lineHeight: 1.3
       }
-    }, m.name), /*#__PURE__*/React.createElement("div", {
+    }, m.name)), /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         justifyContent: "space-between",
@@ -3037,14 +3284,7 @@ function OrderWizard({
         cursor: blocked ? "not-allowed" : "pointer"
       }
     }, "+"))));
-  })), types >= MAX_TYPES && /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 16,
-      color: "#b85c1a",
-      fontWeight: 600,
-      marginBottom: 12
-    }
-  }, "Voc\xEA j\xE1 escolheu ", MAX_TYPES, " pratos diferentes. Para trocar, tire um dos escolhidos."), /*#__PURE__*/React.createElement("div", {
+  })), /*#__PURE__*/React.createElement("div", {
     style: {
       position: "sticky",
       bottom: -28,
@@ -3065,7 +3305,7 @@ function OrderWizard({
       fontSize: 18,
       fontWeight: 700
     }
-  }, /*#__PURE__*/React.createElement("span", null, missing === 0 ? `${qty} marmitas ✓` : qty === 0 ? `Faltam ${MIN_QTY} marmitas` : `Faltam ${missing} ${missing === 1 ? "marmita" : "marmitas"}`), /*#__PURE__*/React.createElement("span", null, fmt(total))), /*#__PURE__*/React.createElement("button", {
+  }, /*#__PURE__*/React.createElement("span", null, missing === 0 ? `${qty} ${qty === 1 ? "marmita" : "marmitas"} ✓` : "Escolha uma marmita"), /*#__PURE__*/React.createElement("span", null, fmt(total))), /*#__PURE__*/React.createElement("button", {
     className: "lp-btn",
     disabled: missing > 0,
     style: {
@@ -3438,7 +3678,7 @@ function LandingPage({
     name: "check",
     size: 14,
     color: "#8bc543"
-  }), " ou monte o seu, a partir de ", MIN_QTY, " marmitas"), /*#__PURE__*/React.createElement("div", {
+  }), " ou monte o seu, do jeito que quiser"), /*#__PURE__*/React.createElement("div", {
     className: "lp-cta-row",
     style: {
       display: "flex",
@@ -3784,7 +4024,7 @@ function LandingPage({
       lineHeight: 1.55,
       margin: "0 0 16px"
     }
-  }, "Escolha o que quiser do card\xE1pio. M\xEDnimo de ", MIN_QTY, " marmitas por pedido."), /*#__PURE__*/React.createElement("div", {
+  }, "Escolha o que quiser do card\xE1pio, na quantidade que quiser."), /*#__PURE__*/React.createElement("div", {
     style: {
       marginTop: "auto"
     }
@@ -3941,7 +4181,7 @@ function LandingPage({
       fontSize: 14.5,
       margin: 0
     }
-  }, "M\xEDnimo de ", MIN_QTY, " marmitas \xB7 at\xE9 ", MAX_TYPES, " pratos diferentes por pedido")), /*#__PURE__*/React.createElement("div", {
+  }, "Escolha os pratos e a quantidade que quiser")), /*#__PURE__*/React.createElement("div", {
     style: {
       maxWidth: 760,
       margin: "0 auto"
@@ -3968,9 +4208,14 @@ function LandingPage({
       padding: "16px 18px",
       borderTop: idx ? "1px solid #eef1ea" : "none"
     }
-  }, /*#__PURE__*/React.createElement("div", {
+  }, m.photo && /*#__PURE__*/React.createElement(MealPhoto, {
+    src: m.photo,
+    alt: m.name,
+    size: 72
+  }), /*#__PURE__*/React.createElement("div", {
     style: {
-      minWidth: 0
+      minWidth: 0,
+      flex: 1
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
@@ -4488,7 +4733,7 @@ function Dashboard({
       marginBottom: 22
     }
   }, /*#__PURE__*/React.createElement(StatCard, {
-    label: "Receita total",
+    label: "Receita total (pedidos pagos)",
     value: fmt(kpis.revenue),
     icon: "wallet",
     tone: "forest"
@@ -4856,7 +5101,7 @@ function Clients({
   const [viewC, setViewC] = useState(null);
   const filtered = clients.filter(c => c.name.toLowerCase().includes(query.toLowerCase()));
   const digits = v => String(v || "").replace(/\D/g, "");
-  const spendByClient = c => orders.filter(o => o.status !== "Cancelado" && (digits(c.phone) ? digits(o.phone) === digits(c.phone) : o.client === c.name)).reduce((s, o) => s + o.total, 0);
+  const spendByClient = c => orders.filter(o => o.status !== "Cancelado" && o.payment === "Pago" && (digits(c.phone) ? digits(o.phone) === digits(c.phone) : o.client === c.name)).reduce((s, o) => s + o.total, 0);
   const historyOf = c => orders.filter(o => digits(c.phone) ? digits(o.phone) === digits(c.phone) : o.client === c.name);
   const submit = () => {
     if (!form.name.trim()) {
@@ -5020,7 +5265,7 @@ function Clients({
         fontWeight: 700,
         margin: "18px 0 8px"
       }
-    }, "Hist\xF3rico de pedidos (", hist.length, ") \xB7 ", fmt(hist.filter(o => o.status !== "Cancelado").reduce((s, o) => s + o.total, 0))), hist.length === 0 && /*#__PURE__*/React.createElement("p", {
+    }, "Hist\xF3rico de pedidos (", hist.length, ") \xB7 ", fmt(hist.filter(o => o.status !== "Cancelado" && o.payment === "Pago").reduce((s, o) => s + o.total, 0))), hist.length === 0 && /*#__PURE__*/React.createElement("p", {
       style: {
         fontSize: 13,
         color: "#6f8072"
@@ -5199,12 +5444,37 @@ function Clients({
 /* ============================== ORDERS ============================== */
 
 function Orders({
+  clients,
   orders,
   setOrders,
   cycleStatus,
   showToast
 }) {
   const [editO, setEditO] = useState(null);
+  const [posO, setPosO] = useState(null);
+  const [posText, setPosText] = useState("");
+  const [posPhone, setPosPhone] = useState("");
+  const openPos = o => {
+    const cl = clients.find(c => phoneToWa(c.phone) && c.name.trim().toLowerCase() === String(o.client).trim().toLowerCase());
+    setPosO(o);
+    setPosPhone(o.phone || (cl ? cl.phone : ""));
+    setPosText(afterSaleMessage(o.client, o.number));
+  };
+  const sendPos = () => {
+    const wa = phoneToWa(posPhone);
+    if (!wa) {
+      showToast("Digite um WhatsApp válido, com DDD.");
+      return;
+    }
+    setOrders(prev => prev.map(x => x.id === posO.id ? {
+      ...x,
+      phone: posPhone,
+      afterSale: new Date().toISOString()
+    } : x));
+    openWhats(posText, wa);
+    setPosO(null);
+    showToast("Conversa aberta no WhatsApp. Basta apertar enviar.");
+  };
   const [filter, setFilter] = useState("Todos");
   const filtered = filter === "Todos" ? orders : orders.filter(o => o.status === filter);
   return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(SectionTitle, {
@@ -5226,7 +5496,86 @@ function Orders({
       color: filter === s ? "#fff" : "#1a4d2e",
       borderColor: filter === s ? "#1a4d2e" : "#cfe0cf"
     }
-  }, s))), editO && /*#__PURE__*/React.createElement(EditModal, {
+  }, s))), posO && /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...overlayStyle,
+      alignItems: "flex-start",
+      overflowY: "auto",
+      padding: "20px 12px"
+    },
+    onClick: () => setPosO(null)
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...modalStyle,
+      maxWidth: 560,
+      width: "100%",
+      margin: "0 auto"
+    },
+    onClick: e => e.stopPropagation()
+  }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: () => setPosO(null),
+    style: modalCloseBtn,
+    "aria-label": "Fechar"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "x",
+    size: 16
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontFamily: "Poppins, sans-serif",
+      fontWeight: 700,
+      fontSize: 17
+    }
+  }, "Mensagem de p\xF3s-venda"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      color: "#526355",
+      margin: "4px 0 12px"
+    }
+  }, "Para ", posO.client, ". Revise e edite se quiser antes de enviar."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 12
+    }
+  }, /*#__PURE__*/React.createElement("label", {
+    style: labelStyle
+  }, "WhatsApp do cliente (com DDD)", posO.phone ? "" : " — este pedido ainda não tinha número"), /*#__PURE__*/React.createElement("input", {
+    type: "tel",
+    inputMode: "tel",
+    maxLength: 15,
+    placeholder: "(19) 99999-9999",
+    style: inputStyle,
+    value: posPhone,
+    onChange: e => setPosPhone(formatPhone(e.target.value))
+  })), /*#__PURE__*/React.createElement("textarea", {
+    rows: 16,
+    style: {
+      ...inputStyle,
+      resize: "vertical",
+      fontFamily: "Inter, sans-serif",
+      lineHeight: 1.5
+    },
+    value: posText,
+    onChange: e => setPosText(e.target.value)
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 10,
+      marginTop: 14,
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    style: {
+      ...btnPrimary,
+      background: "#25a244",
+      opacity: phoneToWa(posPhone) ? 1 : 0.5
+    },
+    onClick: sendPos
+  }, "Enviar no WhatsApp"), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    style: btnGhost,
+    onClick: () => setPosText(afterSaleMessage(posO.client, posO.number))
+  }, "Restaurar texto padr\xE3o")))), editO && /*#__PURE__*/React.createElement(EditModal, {
     title: "Editar pedido #" + (editO.number || ""),
     initial: editO,
     onClose: () => setEditO(null),
@@ -5242,6 +5591,14 @@ function Orders({
       key: "total",
       label: "Total (R$)",
       type: "number"
+    }, {
+      key: "payment",
+      label: "Pagamento",
+      type: "select",
+      options: ["Pago", "Não Pago"].map(x => ({
+        value: x,
+        label: x
+      }))
     }, {
       key: "status",
       label: "Status",
@@ -5268,7 +5625,7 @@ function Orders({
     style: card
   }, /*#__PURE__*/React.createElement("div", {
     className: "table-scroll"
-  }, /*#__PURE__*/React.createElement("table", null, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", null, "Pedido"), /*#__PURE__*/React.createElement("th", null, "Cliente"), /*#__PURE__*/React.createElement("th", null, "Tipo"), /*#__PURE__*/React.createElement("th", null, "Itens"), /*#__PURE__*/React.createElement("th", null, "Data"), /*#__PURE__*/React.createElement("th", null, "Total"), /*#__PURE__*/React.createElement("th", null, "Status"), /*#__PURE__*/React.createElement("th", null))), /*#__PURE__*/React.createElement("tbody", null, filtered.map(o => /*#__PURE__*/React.createElement("tr", {
+  }, /*#__PURE__*/React.createElement("table", null, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", null, "Pedido"), /*#__PURE__*/React.createElement("th", null, "Cliente"), /*#__PURE__*/React.createElement("th", null, "Pagamento"), /*#__PURE__*/React.createElement("th", null, "Tipo"), /*#__PURE__*/React.createElement("th", null, "Itens"), /*#__PURE__*/React.createElement("th", null, "Data"), /*#__PURE__*/React.createElement("th", null, "Total"), /*#__PURE__*/React.createElement("th", null, "Status"), /*#__PURE__*/React.createElement("th", null))), /*#__PURE__*/React.createElement("tbody", null, filtered.map(o => /*#__PURE__*/React.createElement("tr", {
     key: o.id
   }, /*#__PURE__*/React.createElement("td", {
     style: {
@@ -5279,14 +5636,35 @@ function Orders({
       fontSize: 11.5,
       color: "#8a988c"
     }
-  }, o.phone)), /*#__PURE__*/React.createElement("td", {
+  }, o.phone)), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("select", {
+    value: o.payment || "Não Pago",
+    onChange: e => {
+      const v = e.target.value;
+      setOrders(prev => prev.map(x => x.id === o.id ? {
+        ...x,
+        payment: v
+      } : x));
+      showToast(v === "Pago" ? "Pedido marcado como pago." : "Pedido marcado como não pago.");
+    },
+    style: {
+      ...inputStyle,
+      width: "auto",
+      padding: "6px 8px",
+      fontSize: 12.5,
+      fontWeight: 700,
+      color: o.payment === "Pago" ? "#2f7a3e" : "#b85c1a",
+      background: o.payment === "Pago" ? "#eaf6dc" : "#fff4e8"
+    }
+  }, /*#__PURE__*/React.createElement("option", null, "Pago"), /*#__PURE__*/React.createElement("option", null, "N\xE3o Pago"))), /*#__PURE__*/React.createElement("td", {
     style: {
       fontSize: 12.5
     }
   }, o.kind || "—"), /*#__PURE__*/React.createElement("td", {
+    className: "wrap",
     style: {
       fontSize: 12.5,
-      color: "#526355"
+      color: "#526355",
+      lineHeight: 1.45
     }
   }, o.items.map(i => `${i.qty}× ${i.name}`).join(", ")), /*#__PURE__*/React.createElement("td", null, fmtDate(o.date)), /*#__PURE__*/React.createElement("td", {
     style: {
@@ -5295,11 +5673,14 @@ function Orders({
   }, fmt(o.total)), /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement(Pill, {
     color: statusColor[o.status]
   }, o.status)), /*#__PURE__*/React.createElement("td", {
+    className: "act"
+  }, /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
-      gap: 6
+      gap: 6,
+      flexWrap: "wrap"
     }
-  }, o.status !== "Entregue" && /*#__PURE__*/React.createElement("button", {
+  }, o.status !== "Entregue" && o.status !== "Cancelado" && /*#__PURE__*/React.createElement("button", {
     onClick: () => cycleStatus(o.id),
     style: {
       ...btnGhost,
@@ -5311,7 +5692,16 @@ function Orders({
     size: 13
   })), /*#__PURE__*/React.createElement(EditBtn, {
     onClick: () => setEditO(o)
-  })))))))));
+  }), ["Entregue", "Aguardando Entrega", "Aguardando Retirada"].includes(o.status) && /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: () => openPos(o),
+    style: {
+      ...btnGhost,
+      padding: "6px 11px",
+      fontSize: 12,
+      color: o.afterSale ? "#2f7a3e" : "#1a4d2e"
+    }
+  }, o.afterSale ? "Pós-venda ✓" : "Pós-venda"))))))))));
 }
 
 /* ============================== MENU & PRICING ============================== */
@@ -5485,7 +5875,7 @@ function MenuPricing({
   })));
   return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(SectionTitle, {
     title: "Card\xE1pio & Precifica\xE7\xE3o",
-    subtitle: `${activeMeals.length} marmitas ativas · o Monte o seu exige mínimo de ${MIN_QTY} marmitas e até ${MAX_TYPES} sabores por pedido`,
+    subtitle: `${activeMeals.length} marmitas ativas · no Monte o seu o cliente escolhe livremente`,
     action: /*#__PURE__*/React.createElement("button", {
       style: btnPrimary,
       onClick: openForm
@@ -5922,8 +6312,38 @@ function MealRegistry({
   meals,
   setMeals,
   stock,
+  specs,
+  saveSpec,
   showToast
 }) {
+  const [specFor, setSpecFor] = useState(null);
+  const [photoBusy, setPhotoBusy] = useState(null);
+  const changePhoto = async (m, file) => {
+    setPhotoBusy(m.id);
+    try {
+      const blob = await compressImage(file);
+      const url = await uploadMealPhoto(m.id, blob);
+      const old = m.photo;
+      setMeals(prev => prev.map(x => x.id === m.id ? {
+        ...x,
+        photo: url
+      } : x));
+      if (old) deleteMealPhoto(old);
+      showToast("Foto salva (" + Math.round(blob.size / 1024) + " KB).");
+    } catch (e) {
+      showToast(e.message || "Não foi possível enviar a foto.");
+    }
+    setPhotoBusy(null);
+  };
+  const removePhoto = m => {
+    const old = m.photo;
+    setMeals(prev => prev.map(x => x.id === m.id ? {
+      ...x,
+      photo: ""
+    } : x));
+    deleteMealPhoto(old);
+    showToast("Foto removida.");
+  };
   const empty = {
     name: "",
     line: "tradicional",
@@ -6041,6 +6461,18 @@ function MealRegistry({
       name: "plus",
       size: 15
     }), " Nova refei\xE7\xE3o")
+  }), specFor && /*#__PURE__*/React.createElement(SpecModal, {
+    meal: specFor,
+    items: specs[specFor.id] || [],
+    stock: stock,
+    specs: specs,
+    meals: meals,
+    onClose: () => setSpecFor(null),
+    onSave: items => {
+      saveSpec(specFor.id, items);
+      setSpecFor(null);
+      showToast("Ficha técnica salva.");
+    }
   }), editing && /*#__PURE__*/React.createElement("div", {
     style: {
       ...card,
@@ -6281,7 +6713,19 @@ function MealRegistry({
   }, shown.map(m => /*#__PURE__*/React.createElement("div", {
     key: m.id,
     style: card
-  }, /*#__PURE__*/React.createElement("div", {
+  }, m.photo && /*#__PURE__*/React.createElement("img", {
+    src: m.photo,
+    alt: m.name,
+    loading: "lazy",
+    style: {
+      width: "100%",
+      height: 150,
+      objectFit: "cover",
+      borderRadius: 12,
+      marginBottom: 12,
+      background: "#f1f6ee"
+    }
+  }), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       justifyContent: "space-between",
@@ -6349,7 +6793,46 @@ function MealRegistry({
     type: "button",
     onClick: () => startEdit(m),
     style: btnGhost
-  }, m.ingredients && m.ingredients.length ? "Editar" : "Cadastrar ingredientes"), m.price > 0 && /*#__PURE__*/React.createElement("button", {
+  }, m.ingredients && m.ingredients.length ? "Editar" : "Cadastrar ingredientes"), /*#__PURE__*/React.createElement("label", {
+    style: {
+      ...btnGhost,
+      cursor: photoBusy === m.id ? "wait" : "pointer",
+      opacity: photoBusy === m.id ? 0.6 : 1
+    }
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "plus",
+    size: 13
+  }), " ", photoBusy === m.id ? "Enviando…" : m.photo ? "Trocar foto" : "Adicionar foto", /*#__PURE__*/React.createElement("input", {
+    type: "file",
+    accept: "image/*",
+    style: {
+      display: "none"
+    },
+    disabled: !!photoBusy,
+    onChange: e => {
+      const f = e.target.files && e.target.files[0];
+      e.target.value = "";
+      if (f) changePhoto(m, f);
+    }
+  })), m.photo && /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: () => removePhoto(m),
+    style: {
+      ...btnGhost,
+      color: "#d6483f",
+      borderColor: "#f0cfcb"
+    }
+  }, "Remover foto"), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: () => setSpecFor(m),
+    style: {
+      ...btnGhost,
+      background: (specs[m.id] || []).length ? "#f1f8e4" : "#fff"
+    }
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "clipboardCheck",
+    size: 13
+  }), " Ficha t\xE9cnica", (specs[m.id] || []).length ? ` (${specs[m.id].length})` : ""), m.price > 0 && /*#__PURE__*/React.createElement("button", {
     type: "button",
     onClick: () => setMeals(prev => prev.map(x => x.id === m.id ? {
       ...x,
@@ -6363,6 +6846,530 @@ function MealRegistry({
   }, m.active ? "Ocultar do site" : "Mostrar no site"))))));
 }
 
+/* ============================== FICHA TÉCNICA & LISTA DE COMPRAS ============================== */
+
+const UNITS = {
+  g: {
+    fam: "mass",
+    f: 1
+  },
+  kg: {
+    fam: "mass",
+    f: 1000
+  },
+  ml: {
+    fam: "vol",
+    f: 1
+  },
+  l: {
+    fam: "vol",
+    f: 1000
+  },
+  un: {
+    fam: "un",
+    f: 1
+  }
+};
+const UNIT_LABEL = {
+  g: "g",
+  kg: "kg",
+  ml: "ml",
+  l: "L",
+  un: "un"
+};
+const normName = n => String(n || "").trim().toLowerCase().replace(/\s+/g, " ");
+const fmtNum = n => new Intl.NumberFormat("pt-BR", {
+  maximumFractionDigits: 2
+}).format(n);
+function fmtAmount(base, fam) {
+  if (fam === "mass") return base >= 1000 ? fmtNum(base / 1000) + " kg" : fmtNum(base) + " g";
+  if (fam === "vol") return base >= 1000 ? fmtNum(base / 1000) + " L" : fmtNum(base) + " ml";
+  return fmtNum(base) + " un";
+}
+function SpecModal({
+  meal,
+  items,
+  stock,
+  specs,
+  meals,
+  onSave,
+  onClose
+}) {
+  const [rows, setRows] = useState(items.length ? items.map(i => ({
+    name: i.name,
+    qty: String(i.qty),
+    unit: i.unit || "g"
+  })) : [{
+    name: "",
+    qty: "",
+    unit: "g"
+  }]);
+  const [err, setErr] = useState("");
+  const names = Array.from(new Set(stock.map(x => x.name.replace(/ \(.*\)$/, "")).concat(Object.values(specs).flat().map(i => i.name)))).filter(Boolean);
+  const setRow = (idx, k, v) => setRows(r => r.map((x, i) => i === idx ? {
+    ...x,
+    [k]: v
+  } : x));
+  const others = meals.filter(m => m.id !== meal.id && (specs[m.id] || []).length);
+  const save = () => {
+    const out = [];
+    for (const r of rows) {
+      if (!r.name.trim() && !String(r.qty).trim()) continue;
+      const q = parseFloat(String(r.qty).replace(",", "."));
+      if (!r.name.trim()) {
+        setErr("Falta o nome de um ingrediente.");
+        return;
+      }
+      if (!isFinite(q) || q <= 0) {
+        setErr("Digite a quantidade de: " + r.name.trim());
+        return;
+      }
+      out.push({
+        name: r.name.trim(),
+        qty: q,
+        unit: r.unit
+      });
+    }
+    onSave(out);
+  };
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...overlayStyle,
+      alignItems: "flex-start",
+      overflowY: "auto",
+      padding: "20px 12px"
+    },
+    onClick: onClose
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...modalStyle,
+      maxWidth: 640,
+      width: "100%",
+      margin: "0 auto"
+    },
+    onClick: e => e.stopPropagation()
+  }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: onClose,
+    style: modalCloseBtn,
+    "aria-label": "Fechar"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "x",
+    size: 16
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontFamily: "Poppins, sans-serif",
+      fontWeight: 700,
+      fontSize: 17
+    }
+  }, "Ficha t\xE9cnica"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13.5,
+      color: "#526355",
+      marginTop: 2
+    }
+  }, meal.name), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "#8a988c",
+      margin: "6px 0 14px"
+    }
+  }, "Quantidade de cada ingrediente para produzir 1 marmita. Esta ficha \xE9 interna: n\xE3o aparece no site."), /*#__PURE__*/React.createElement("datalist", {
+    id: "spec-names"
+  }, names.map(n => /*#__PURE__*/React.createElement("option", {
+    key: n,
+    value: n
+  }))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      gap: 8
+    }
+  }, rows.map((r, idx) => /*#__PURE__*/React.createElement("div", {
+    key: idx,
+    style: {
+      display: "flex",
+      gap: 8
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    list: "spec-names",
+    placeholder: "Ingrediente",
+    style: {
+      ...inputStyle,
+      flex: 3,
+      minWidth: 0
+    },
+    value: r.name,
+    onChange: e => {
+      setRow(idx, "name", e.target.value);
+      setErr("");
+    }
+  }), /*#__PURE__*/React.createElement("input", {
+    type: "number",
+    step: "0.01",
+    min: "0",
+    inputMode: "decimal",
+    placeholder: "Qtd.",
+    style: {
+      ...inputStyle,
+      flex: 1.2,
+      minWidth: 0
+    },
+    value: r.qty,
+    onChange: e => {
+      setRow(idx, "qty", e.target.value);
+      setErr("");
+    }
+  }), /*#__PURE__*/React.createElement("select", {
+    style: {
+      ...inputStyle,
+      flex: 1,
+      minWidth: 0
+    },
+    value: r.unit,
+    onChange: e => setRow(idx, "unit", e.target.value)
+  }, Object.keys(UNITS).map(u => /*#__PURE__*/React.createElement("option", {
+    key: u,
+    value: u
+  }, UNIT_LABEL[u]))), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    "aria-label": "Remover",
+    onClick: () => setRows(x => x.length > 1 ? x.filter((_, i) => i !== idx) : [{
+      name: "",
+      qty: "",
+      unit: "g"
+    }]),
+    style: {
+      ...stepBtn,
+      width: 38,
+      height: 38,
+      flexShrink: 0
+    }
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "x",
+    size: 14
+  }))))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      flexWrap: "wrap",
+      marginTop: 10
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: () => setRows(x => x.concat({
+      name: "",
+      qty: "",
+      unit: "g"
+    })),
+    style: btnGhost
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "plus",
+    size: 14
+  }), " Adicionar ingrediente"), others.length > 0 && !items.length && /*#__PURE__*/React.createElement("select", {
+    style: {
+      ...inputStyle,
+      width: "auto"
+    },
+    value: "",
+    onChange: e => {
+      const m = others.find(x => x.id === e.target.value);
+      if (m) setRows(specs[m.id].map(i => ({
+        name: i.name,
+        qty: String(i.qty),
+        unit: i.unit || "g"
+      })));
+    }
+  }, /*#__PURE__*/React.createElement("option", {
+    value: ""
+  }, "Copiar ficha de outro prato\u2026"), others.map(m => /*#__PURE__*/React.createElement("option", {
+    key: m.id,
+    value: m.id
+  }, m.name)))), err && /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: "#d6483f",
+      fontSize: 13,
+      fontWeight: 600,
+      marginTop: 12
+    }
+  }, err), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 10,
+      marginTop: 16
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    style: btnPrimary,
+    onClick: save
+  }, "Salvar ficha t\xE9cnica"), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    style: btnGhost,
+    onClick: onClose
+  }, "Cancelar"))));
+}
+const PACKAGING = {
+  name: "Embalagem preta marmitex 500ml",
+  perMarmita: 1
+};
+const SHOP_STATUS_DEFAULT = ["Pendente", "Encomendado", "Em preparo"];
+function ShoppingList({
+  orders,
+  meals,
+  specs,
+  showToast
+}) {
+  const [statuses, setStatuses] = useState(SHOP_STATUS_DEFAULT);
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [done, setDone] = useState({});
+  const toggle = st => setStatuses(cur => cur.includes(st) ? cur.filter(x => x !== st) : cur.concat(st));
+  const chosen = orders.filter(o => statuses.includes(o.status) && (!from || String(o.date) >= from) && (!to || String(o.date) <= to));
+  const mealByName = {};
+  meals.forEach(m => {
+    mealByName[normName(m.name)] = m;
+  });
+  const dishes = {};
+  chosen.forEach(o => o.items.forEach(i => {
+    const m = i.mealId && meals.find(x => x.id === i.mealId) || i.meal_id && meals.find(x => x.id === i.meal_id) || mealByName[normName(i.name)];
+    const key = m ? m.id : "x:" + normName(i.name);
+    if (!dishes[key]) dishes[key] = {
+      key,
+      meal: m,
+      name: m ? m.name : i.name,
+      qty: 0
+    };
+    dishes[key].qty += i.qty;
+  }));
+  const dishList = Object.values(dishes).sort((a, b) => b.qty - a.qty);
+  const totalMarmitas = dishList.reduce((s, d) => s + d.qty, 0);
+  const missing = dishList.filter(d => !d.meal || !(specs[d.meal.id] || []).length);
+  const agg = {};
+  dishList.forEach(d => {
+    if (!d.meal) return;
+    (specs[d.meal.id] || []).forEach(ing => {
+      const u = UNITS[ing.unit] || UNITS.g;
+      const key = normName(ing.name) + "|" + u.fam;
+      if (!agg[key]) agg[key] = {
+        key,
+        name: ing.name,
+        fam: u.fam,
+        base: 0,
+        uses: []
+      };
+      const amount = ing.qty * u.f * d.qty;
+      agg[key].base += amount;
+      agg[key].uses.push({
+        dish: d.name,
+        qty: d.qty,
+        amount
+      });
+    });
+  });
+  if (totalMarmitas > 0) {
+    const k = normName(PACKAGING.name) + "|un";
+    if (!agg[k]) agg[k] = {
+      key: k,
+      name: PACKAGING.name,
+      fam: "un",
+      base: 0,
+      uses: []
+    };
+    agg[k].base += totalMarmitas * PACKAGING.perMarmita;
+    agg[k].uses.push({
+      dish: "cada marmita vendida",
+      qty: totalMarmitas,
+      amount: totalMarmitas * PACKAGING.perMarmita
+    });
+  }
+  const lines = Object.values(agg).sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
+  const asText = () => "Lista de compras — 360 Food\n" + lines.map(l => `- ${l.name}: ${fmtAmount(l.base, l.fam)}`).join("\n");
+  const copy = async () => {
+    const t = asText();
+    try {
+      await navigator.clipboard.writeText(t);
+      showToast("Lista copiada.");
+      return;
+    } catch (e) {}
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = t;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+      showToast("Lista copiada.");
+    } catch (e) {
+      showToast("Não foi possível copiar. Use Baixar CSV.");
+    }
+  };
+  const csv = () => {
+    const rows = [["Ingrediente", "Quantidade", "Usado em"]].concat(lines.map(l => [l.name, fmtAmount(l.base, l.fam), l.uses.map(u => u.qty + "x " + u.dish).join("; ")]));
+    const text = "﻿" + rows.map(r => r.map(c => '"' + String(c).replace(/"/g, '""') + '"').join(";")).join("\n");
+    try {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([text], {
+        type: "text/csv;charset=utf-8"
+      }));
+      a.download = "lista-de-compras.csv";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch (e) {
+      showToast("Não foi possível baixar o arquivo.");
+    }
+  };
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(SectionTitle, {
+    title: "Lista de compras",
+    subtitle: "Soma dos insumos das fichas t\xE9cnicas, de acordo com os pedidos escolhidos.",
+    action: /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 8
+      }
+    }, /*#__PURE__*/React.createElement("button", {
+      type: "button",
+      style: btnGhost,
+      onClick: copy,
+      disabled: !lines.length
+    }, "Copiar lista"), /*#__PURE__*/React.createElement("button", {
+      type: "button",
+      style: btnPrimary,
+      onClick: csv,
+      disabled: !lines.length
+    }, "Baixar CSV"))
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...card,
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      marginBottom: 8
+    }
+  }, "Quais pedidos entram na lista?"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      flexWrap: "wrap",
+      marginBottom: 12
+    }
+  }, STATUS_FLOW.map(st => {
+    const on = statuses.includes(st);
+    return /*#__PURE__*/React.createElement("button", {
+      type: "button",
+      key: st,
+      onClick: () => toggle(st),
+      style: {
+        ...btnGhost,
+        padding: "7px 13px",
+        background: on ? "#1a4d2e" : "#fff",
+        color: on ? "#fff" : "#1a4d2e",
+        borderColor: on ? "#1a4d2e" : "#cfe0cf"
+      }
+    }, st);
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 12,
+      flexWrap: "wrap",
+      alignItems: "flex-end"
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    style: labelStyle
+  }, "Pedidos de (opcional)"), /*#__PURE__*/React.createElement("input", {
+    type: "date",
+    style: {
+      ...inputStyle,
+      width: 160
+    },
+    value: from,
+    onChange: e => setFrom(e.target.value)
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    style: labelStyle
+  }, "at\xE9 (opcional)"), /*#__PURE__*/React.createElement("input", {
+    type: "date",
+    style: {
+      ...inputStyle,
+      width: 160
+    },
+    value: to,
+    onChange: e => setTo(e.target.value)
+  })), (from || to) && /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    style: btnGhost,
+    onClick: () => {
+      setFrom("");
+      setTo("");
+    }
+  }, "Limpar datas"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginLeft: "auto",
+      fontSize: 13,
+      color: "#526355",
+      fontWeight: 600
+    }
+  }, chosen.length, " ", chosen.length === 1 ? "pedido" : "pedidos", " \xB7 ", totalMarmitas, " ", totalMarmitas === 1 ? "marmita" : "marmitas"))), missing.length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      background: "#fff4e8",
+      border: "1px solid #f0cfae",
+      borderRadius: 14,
+      padding: "12px 16px",
+      marginBottom: 16,
+      fontSize: 13,
+      color: "#8a4a12",
+      lineHeight: 1.5
+    }
+  }, /*#__PURE__*/React.createElement("b", null, "Sem ficha t\xE9cnica (n\xE3o entram na soma):"), " ", missing.map(d => `${d.name} (${d.qty})`).join(", "), ". Cadastre em Refei\xE7\xF5es > Ficha t\xE9cnica."), /*#__PURE__*/React.createElement("div", {
+    style: card
+  }, chosen.length === 0 ? /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 14,
+      color: "#6f8072",
+      margin: 0
+    }
+  }, "Nenhum pedido nos status escolhidos.") : lines.length === 0 ? /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 14,
+      color: "#6f8072",
+      margin: 0
+    }
+  }, "Os pratos destes pedidos ainda n\xE3o t\xEAm ficha t\xE9cnica.") : /*#__PURE__*/React.createElement("div", {
+    className: "table-scroll"
+  }, /*#__PURE__*/React.createElement("table", null, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", null), /*#__PURE__*/React.createElement("th", null, "Ingrediente"), /*#__PURE__*/React.createElement("th", null, "Total a comprar"), /*#__PURE__*/React.createElement("th", null, "Usado em"))), /*#__PURE__*/React.createElement("tbody", null, lines.map(l => /*#__PURE__*/React.createElement("tr", {
+    key: l.key,
+    style: {
+      opacity: done[l.key] ? 0.45 : 1
+    }
+  }, /*#__PURE__*/React.createElement("td", null, /*#__PURE__*/React.createElement("input", {
+    type: "checkbox",
+    "aria-label": "Comprado: " + l.name,
+    checked: !!done[l.key],
+    onChange: () => setDone(d => ({
+      ...d,
+      [l.key]: !d[l.key]
+    }))
+  })), /*#__PURE__*/React.createElement("td", {
+    style: {
+      fontWeight: 600,
+      textDecoration: done[l.key] ? "line-through" : "none"
+    }
+  }, l.name), /*#__PURE__*/React.createElement("td", {
+    style: {
+      fontWeight: 700
+    }
+  }, fmtAmount(l.base, l.fam)), /*#__PURE__*/React.createElement("td", {
+    className: "wrap",
+    style: {
+      fontSize: 12.5,
+      color: "#526355",
+      lineHeight: 1.45
+    }
+  }, l.uses.map(u => u.dish === "cada marmita vendida" ? `${u.qty} marmitas (1 por marmita)` : `${u.qty}× ${u.dish}`).join(", ")))))))));
+}
+
 /* ============================== STOCK ============================== */
 
 function Stock({
@@ -6371,13 +7378,21 @@ function Stock({
   restock,
   showToast
 }) {
-  const [editS, setEditS] = useState(null);
-  const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({
+  const emptyForm = {
     name: "",
     qty: "",
     min: "",
-    unit: "un"
+    unit: "un",
+    cost: "",
+    packQty: "1",
+    url: ""
+  };
+  const [editS, setEditS] = useState(null);
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState(emptyForm);
+  const formUnitCost = unitCostOf({
+    cost: parseFloat(String(form.cost).replace(",", ".")),
+    packQty: parseFloat(String(form.packQty).replace(",", "."))
   });
   const submit = () => {
     if (!form.name.trim()) {
@@ -6389,20 +7404,67 @@ function Stock({
       name: form.name.trim(),
       qty: num(form.qty),
       min: num(form.min),
-      unit: form.unit.trim() || "un"
+      unit: form.unit.trim() || "un",
+      cost: num(form.cost),
+      packQty: num(form.packQty) > 0 ? num(form.packQty) : 1,
+      url: normUrl(form.url)
     }]);
-    setForm({
-      name: "",
-      qty: "",
-      min: "",
-      unit: "un"
-    });
+    setForm(emptyForm);
     setShowForm(false);
     showToast("Item adicionado ao estoque.");
   };
+  const costFields = (v, set) => /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    style: labelStyle
+  }, "Valor de custo do pacote (R$)"), /*#__PURE__*/React.createElement("input", {
+    type: "number",
+    step: "0.01",
+    min: "0",
+    style: inputStyle,
+    value: v.cost,
+    onChange: e => set({
+      ...v,
+      cost: e.target.value
+    })
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    style: labelStyle
+  }, "Quantidade no pacote"), /*#__PURE__*/React.createElement("input", {
+    type: "number",
+    step: "0.01",
+    min: "0",
+    style: inputStyle,
+    placeholder: "Ex.: 100",
+    value: v.packQty,
+    onChange: e => set({
+      ...v,
+      packQty: e.target.value
+    })
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    style: labelStyle
+  }, "Valor unit\xE1rio"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...inputStyle,
+      background: "#f6f8f2",
+      fontWeight: 700
+    }
+  }, num(v.cost) > 0 ? fmtUnitCost(unitCostOf(v)) + " / " + (v.unit || "un") : "—")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      gridColumn: "1 / -1"
+    }
+  }, /*#__PURE__*/React.createElement("label", {
+    style: labelStyle
+  }, "Link de compra (opcional)"), /*#__PURE__*/React.createElement("input", {
+    type: "url",
+    placeholder: "https://...",
+    style: inputStyle,
+    value: v.url,
+    onChange: e => set({
+      ...v,
+      url: e.target.value
+    })
+  })));
   return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(SectionTitle, {
     title: "Estoque",
-    subtitle: "Insumos e embalagens \u2014 reabaste\xE7a itens abaixo do m\xEDnimo.",
+    subtitle: "Insumos e embalagens, com custo e link de compra.",
     action: /*#__PURE__*/React.createElement("button", {
       style: btnPrimary,
       onClick: () => setShowForm(v => !v)
@@ -6458,14 +7520,14 @@ function Stock({
     })
   })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     style: labelStyle
-  }, "Unidade"), /*#__PURE__*/React.createElement("input", {
+  }, "Unidade (un, kg...)"), /*#__PURE__*/React.createElement("input", {
     style: inputStyle,
     value: form.unit,
     onChange: e => setForm({
       ...form,
       unit: e.target.value
     })
-  })), /*#__PURE__*/React.createElement("button", {
+  })), costFields(form, setForm), /*#__PURE__*/React.createElement("button", {
     type: "button",
     onClick: submit,
     style: {
@@ -6480,7 +7542,11 @@ function Stock({
     }
   }, "Nenhum item no estoque ainda. Use \u201CNovo item\u201D para cadastrar."), editS && /*#__PURE__*/React.createElement(EditModal, {
     title: "Editar item do estoque",
-    initial: editS,
+    initial: {
+      ...editS,
+      cost: String(editS.cost || ""),
+      packQty: String(editS.packQty || 1)
+    },
     onClose: () => setEditS(null),
     fields: [{
       key: "name",
@@ -6497,8 +7563,21 @@ function Stock({
     }, {
       key: "unit",
       label: "Unidade (kg, un...)"
+    }, {
+      key: "cost",
+      label: "Valor de custo do pacote (R$)",
+      type: "number"
+    }, {
+      key: "packQty",
+      label: "Quantidade no pacote (ex.: 100 un)",
+      type: "number"
+    }, {
+      key: "url",
+      label: "Link de compra"
     }],
     onSave: d => {
+      d.packQty = d.packQty > 0 ? d.packQty : 1;
+      d.url = normUrl(d.url);
       setStock(prev => prev.map(x => x.id === editS.id ? {
         ...x,
         ...d
@@ -6510,15 +7589,18 @@ function Stock({
     style: card
   }, /*#__PURE__*/React.createElement("div", {
     className: "table-scroll"
-  }, /*#__PURE__*/React.createElement("table", null, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", null, "Item"), /*#__PURE__*/React.createElement("th", null, "Quantidade"), /*#__PURE__*/React.createElement("th", null, "M\xEDnimo"), /*#__PURE__*/React.createElement("th", null, "N\xEDvel"), /*#__PURE__*/React.createElement("th", null), /*#__PURE__*/React.createElement("th", null))), /*#__PURE__*/React.createElement("tbody", null, stock.map(s => {
+  }, /*#__PURE__*/React.createElement("table", null, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", null, "Item"), /*#__PURE__*/React.createElement("th", null, "Quantidade"), /*#__PURE__*/React.createElement("th", null, "M\xEDnimo"), /*#__PURE__*/React.createElement("th", null, "N\xEDvel"), /*#__PURE__*/React.createElement("th", null, "Custo do pacote"), /*#__PURE__*/React.createElement("th", null, "Valor unit\xE1rio"), /*#__PURE__*/React.createElement("th", null, "Compra"), /*#__PURE__*/React.createElement("th", null))), /*#__PURE__*/React.createElement("tbody", null, stock.map(s => {
     const low = s.qty < s.min;
     const pct = s.min > 0 ? Math.min(100, s.qty / (s.min * 2) * 100) : s.qty > 0 ? 100 : 0;
     return /*#__PURE__*/React.createElement("tr", {
       key: s.id
     }, /*#__PURE__*/React.createElement("td", {
       style: {
-        fontWeight: 600,
-        display: "flex",
+        fontWeight: 600
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        display: "inline-flex",
         alignItems: "center",
         gap: 8
       }
@@ -6526,7 +7608,7 @@ function Stock({
       name: "snowflake",
       size: 13,
       color: "#3fa7bf"
-    }), " ", s.name), /*#__PURE__*/React.createElement("td", {
+    }), " ", s.name)), /*#__PURE__*/React.createElement("td", {
       style: {
         fontWeight: 700,
         color: low ? "#d6483f" : "#1c2b1f"
@@ -6537,7 +7619,7 @@ function Stock({
       }
     }, s.min, " ", s.unit), /*#__PURE__*/React.createElement("td", {
       style: {
-        width: 180
+        width: 110
       }
     }, /*#__PURE__*/React.createElement("div", {
       style: {
@@ -6552,19 +7634,41 @@ function Stock({
         height: "100%",
         background: low ? "#d6483f" : "#8bc543"
       }
-    }))), /*#__PURE__*/React.createElement("td", null, low && /*#__PURE__*/React.createElement("button", {
+    }))), /*#__PURE__*/React.createElement("td", null, s.cost > 0 ? /*#__PURE__*/React.createElement("span", null, fmt(s.cost), s.packQty > 1 ? /*#__PURE__*/React.createElement("span", {
+      style: {
+        color: "#8a988c",
+        fontSize: 12
+      }
+    }, " \xB7 ", s.packQty, " ", s.unit) : null) : "—"), /*#__PURE__*/React.createElement("td", {
+      style: {
+        fontWeight: 700
+      }
+    }, s.cost > 0 ? fmtUnitCost(unitCostOf(s)) + " / " + s.unit : "—"), /*#__PURE__*/React.createElement("td", null, s.url ? /*#__PURE__*/React.createElement("a", {
+      href: s.url,
+      target: "_blank",
+      rel: "noopener noreferrer",
+      style: {
+        ...btnGhost,
+        padding: "6px 11px",
+        fontSize: 12,
+        textDecoration: "none"
+      }
+    }, "Comprar") : "—"), /*#__PURE__*/React.createElement("td", {
+      className: "act"
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 6,
+        flexWrap: "wrap"
+      }
+    }, low && /*#__PURE__*/React.createElement("button", {
       style: {
         ...btnGhost,
         padding: "6px 11px",
         fontSize: 12
       },
       onClick: () => restock(s.id)
-    }, "Reabastecer")), /*#__PURE__*/React.createElement("td", {
-      style: {
-        display: "flex",
-        gap: 6
-      }
-    }, /*#__PURE__*/React.createElement(EditBtn, {
+    }, "Reabastecer"), /*#__PURE__*/React.createElement(EditBtn, {
       onClick: () => setEditS(s)
     }), /*#__PURE__*/React.createElement("button", {
       type: "button",
@@ -6579,17 +7683,24 @@ function Stock({
         color: "#d6483f",
         borderColor: "#f0cfcb"
       }
-    }, "Excluir")));
+    }, "Excluir"))));
   }))))));
 }
 
 /* ============================== FINANCE ============================== */
 
+const monthBounds = iso => {
+  const y = parseInt(iso.slice(0, 4), 10),
+    m = parseInt(iso.slice(5, 7), 10);
+  const last = new Date(y, m, 0).getDate();
+  return {
+    from: iso.slice(0, 7) + "-01",
+    to: iso.slice(0, 7) + "-" + String(last).padStart(2, "0")
+  };
+};
 function Finance({
-  kpis,
-  monthly,
-  expenseBreakdown,
-  expenses,
+  orders,
+  expenses: allExpenses,
   setExpenses,
   showToast
 }) {
@@ -6602,13 +7713,82 @@ function Finance({
   const [form, setForm] = useState(empty);
   const [showForm, setShowForm] = useState(false);
   const [editE, setEditE] = useState(null);
-  const result = kpis.monthRevenue - kpis.monthExpense;
-  const margin = kpis.monthRevenue > 0 ? result / kpis.monthRevenue * 100 : null;
-  const hasMonthly = monthly.some(m => m.receita > 0 || m.custo > 0);
-  const catOpts = EXPENSE_CATS.map(c => ({
-    value: c.name,
-    label: c.name
+  const [range, setRange] = useState(() => monthBounds(todayISO()));
+  const cur = monthBounds(todayISO());
+  const isCurMonth = range.from === cur.from && range.to === cur.to;
+  const inRange = d => {
+    const x = String(d).slice(0, 10);
+    return x >= range.from && x <= range.to;
+  };
+  const expenses = allExpenses.filter(e => inRange(e.date));
+  const rangeOrders = orders.filter(o => o.status !== "Cancelado" && inRange(o.date));
+  const validOrders = rangeOrders.filter(o => o.payment === "Pago");
+  const receivable = rangeOrders.filter(o => o.payment !== "Pago").reduce((s, o) => s + o.total, 0);
+  const revenue = validOrders.reduce((s, o) => s + o.total, 0);
+  const expenseTotal = expenses.reduce((s, e) => s + e.amount, 0);
+  const result = revenue - expenseTotal;
+  const margin = revenue > 0 ? result / revenue * 100 : null;
+  const periodLabel = isCurMonth ? "do mês" : "do período";
+  const catNames = Array.from(new Set(EXPENSE_CATS.map(c => c.name).concat(allExpenses.map(e => e.category)))).filter(Boolean);
+  const expenseBreakdown = (() => {
+    const PAL = ["#3f7fbf", "#3fa7bf", "#b06fd0", "#d9a441", "#5aa07a", "#c76f8f", "#7c8a7e"];
+    const tot = {};
+    expenses.forEach(e => {
+      tot[e.category] = (tot[e.category] || 0) + e.amount;
+    });
+    let extra = 0;
+    return Object.keys(tot).map(name => {
+      const d = EXPENSE_CATS.find(c => c.name === name);
+      return {
+        name,
+        color: d ? d.color : PAL[extra++ % PAL.length],
+        value: tot[name]
+      };
+    }).sort((a, b) => b.value - a.value);
+  })();
+  const monthly = (() => {
+    const MES = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
+    const out = [];
+    let y = parseInt(range.from.slice(0, 4), 10),
+      m = parseInt(range.from.slice(5, 7), 10);
+    const ey = parseInt(range.to.slice(0, 4), 10),
+      em = parseInt(range.to.slice(5, 7), 10);
+    while ((y < ey || y === ey && m <= em) && out.length < 24) {
+      out.push({
+        key: y + "-" + String(m).padStart(2, "0"),
+        mes: MES[m - 1] + (y !== ey || parseInt(range.from.slice(0, 4), 10) !== ey ? "/" + String(y).slice(2) : ""),
+        receita: 0,
+        custo: 0
+      });
+      m++;
+      if (m > 12) {
+        m = 1;
+        y++;
+      }
+    }
+    validOrders.forEach(o => {
+      const r = out.find(x => x.key === String(o.date).slice(0, 7));
+      if (r) r.receita += o.total;
+    });
+    expenses.forEach(e => {
+      const r = out.find(x => x.key === String(e.date).slice(0, 7));
+      if (r) r.custo += e.amount;
+    });
+    return out;
+  })();
+  const hasMonthly = monthly.length > 0 && monthly.some(m => m.receita > 0 || m.custo > 0);
+  const setFrom = v => v && setRange(r => ({
+    from: v,
+    to: v > r.to ? v : r.to
   }));
+  const setTo = v => v && setRange(r => ({
+    from: v < r.from ? v : r.from,
+    to: v
+  }));
+  const prevMonth = () => {
+    const d = new Date(parseInt(range.from.slice(0, 4), 10), parseInt(range.from.slice(5, 7), 10) - 2, 1);
+    setRange(monthBounds(d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-01"));
+  };
   const submit = () => {
     const amount = parseFloat(String(form.amount).replace(",", "."));
     if (!form.description.trim()) {
@@ -6622,7 +7802,7 @@ function Finance({
     setExpenses(prev => [{
       id: newId(),
       description: form.description.trim(),
-      category: form.category,
+      category: form.category.trim() || "Outros",
       amount,
       date: form.date || todayISO()
     }, ...prev]);
@@ -6632,7 +7812,7 @@ function Finance({
   };
   return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(SectionTitle, {
     title: "Financeiro",
-    subtitle: "Receita dos pedidos e despesas lan\xE7adas por voc\xEAs.",
+    subtitle: "Receita (s\xF3 pedidos pagos) e despesas lan\xE7adas por voc\xEAs.",
     action: /*#__PURE__*/React.createElement("button", {
       style: btnPrimary,
       onClick: () => setShowForm(v => !v)
@@ -6642,27 +7822,79 @@ function Finance({
     }), " Lan\xE7ar despesa")
   }), /*#__PURE__*/React.createElement("div", {
     style: {
+      ...card,
+      display: "flex",
+      flexWrap: "wrap",
+      gap: 12,
+      alignItems: "flex-end",
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    style: labelStyle
+  }, "De"), /*#__PURE__*/React.createElement("input", {
+    type: "date",
+    style: {
+      ...inputStyle,
+      width: 160
+    },
+    value: range.from,
+    onChange: e => setFrom(e.target.value)
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    style: labelStyle
+  }, "At\xE9"), /*#__PURE__*/React.createElement("input", {
+    type: "date",
+    style: {
+      ...inputStyle,
+      width: 160
+    },
+    value: range.to,
+    onChange: e => setTo(e.target.value)
+  })), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    style: btnGhost,
+    onClick: prevMonth
+  }, "\u2190 M\xEAs anterior"), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    style: {
+      ...btnGhost,
+      background: isCurMonth ? "#1a4d2e" : "#fff",
+      color: isCurMonth ? "#fff" : "#1a4d2e"
+    },
+    onClick: () => setRange(monthBounds(todayISO()))
+  }, "M\xEAs atual"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12.5,
+      color: "#6f8072",
+      marginLeft: "auto"
+    }
+  }, fmtDate(range.from), " a ", fmtDate(range.to))), /*#__PURE__*/React.createElement("div", {
+    style: {
       display: "grid",
-      gridTemplateColumns: "repeat(3, 1fr)",
+      gridTemplateColumns: "repeat(4, 1fr)",
       gap: 16,
       marginBottom: 22
     },
     className: "lp-grid-3"
   }, /*#__PURE__*/React.createElement(StatCard, {
-    label: "Receita do m\xEAs (pedidos)",
-    value: fmt(kpis.monthRevenue),
+    label: "Receita " + periodLabel + " (pedidos pagos)",
+    value: fmt(revenue),
     icon: "wallet",
     tone: "forest"
   }), /*#__PURE__*/React.createElement(StatCard, {
-    label: "Despesas do m\xEAs",
-    value: fmt(kpis.monthExpense),
+    label: "Despesas " + periodLabel,
+    value: fmt(expenseTotal),
     icon: "clipboardCheck",
     tone: "tomato"
   }), /*#__PURE__*/React.createElement(StatCard, {
-    label: margin === null ? "Resultado do mês" : `Resultado do mês · margem ${margin.toFixed(0)}%`,
+    label: margin === null ? "Resultado " + periodLabel : `Resultado ${periodLabel} · margem ${margin.toFixed(0)}%`,
     value: fmt(result),
     icon: "trendUp",
     tone: "lime"
+  }), /*#__PURE__*/React.createElement(StatCard, {
+    label: "A receber (pedidos n\xE3o pagos)",
+    value: fmt(receivable),
+    icon: "bag",
+    tone: "orange"
   })), showForm && /*#__PURE__*/React.createElement("div", {
     onKeyDown: e => {
       if (e.key === "Enter" && e.target.tagName === "INPUT") submit();
@@ -6687,16 +7919,20 @@ function Finance({
     })
   })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     style: labelStyle
-  }, "Categoria"), /*#__PURE__*/React.createElement("select", {
+  }, "Categoria (escolha ou digite uma nova)"), /*#__PURE__*/React.createElement("input", {
+    list: "f360-cats",
     style: inputStyle,
     value: form.category,
     onChange: e => setForm({
       ...form,
       category: e.target.value
     })
-  }, catOpts.map(o => /*#__PURE__*/React.createElement("option", {
-    key: o.value
-  }, o.label)))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+  }), /*#__PURE__*/React.createElement("datalist", {
+    id: "f360-cats"
+  }, catNames.map(n => /*#__PURE__*/React.createElement("option", {
+    key: n,
+    value: n
+  })))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     style: labelStyle
   }, "Valor (R$)"), /*#__PURE__*/React.createElement("input", {
     type: "number",
@@ -6739,9 +7975,7 @@ function Finance({
       required: true
     }, {
       key: "category",
-      label: "Categoria",
-      type: "select",
-      options: catOpts
+      label: "Categoria"
     }, {
       key: "amount",
       label: "Valor (R$)",
@@ -6775,7 +8009,7 @@ function Finance({
       fontWeight: 700,
       marginBottom: 12
     }
-  }, "Receita x Despesas \u2014 6 meses"), hasMonthly ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(BarChartSVG, {
+  }, "Receita x Despesas por m\xEAs"), hasMonthly ? /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(BarChartSVG, {
     data: monthly,
     aKey: "receita",
     bKey: "custo"
@@ -6827,14 +8061,14 @@ function Finance({
       fontWeight: 700,
       marginBottom: 12
     }
-  }, "Despesas do m\xEAs por categoria"), expenseBreakdown.length === 0 ? /*#__PURE__*/React.createElement("p", {
+  }, "Despesas por categoria"), expenseBreakdown.length === 0 ? /*#__PURE__*/React.createElement("p", {
     style: {
       fontSize: 13,
       color: "#6f8072",
       padding: "30px 0",
       textAlign: "center"
     }
-  }, "Nenhuma despesa neste m\xEAs.") : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+  }, "Nenhuma despesa neste per\xEDodo.") : /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       justifyContent: "center"
@@ -6873,6 +8107,34 @@ function Finance({
       fontWeight: 700
     }
   }, fmt(e.value)))))))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...card,
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13.5,
+      fontWeight: 700,
+      marginBottom: 12
+    }
+  }, "Receitas no per\xEDodo (pedidos pagos) \xB7 ", fmt(revenue)), validOrders.length === 0 ? /*#__PURE__*/React.createElement("p", {
+    style: {
+      fontSize: 13,
+      color: "#6f8072"
+    }
+  }, "Nenhum pedido pago neste per\xEDodo. Marque o pagamento como \u201CPago\u201D na aba Pedidos.") : /*#__PURE__*/React.createElement("div", {
+    className: "table-scroll"
+  }, /*#__PURE__*/React.createElement("table", null, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", null, "Data"), /*#__PURE__*/React.createElement("th", null, "Pedido"), /*#__PURE__*/React.createElement("th", null, "Cliente"), /*#__PURE__*/React.createElement("th", null, "Tipo"), /*#__PURE__*/React.createElement("th", null, "Valor"))), /*#__PURE__*/React.createElement("tbody", null, validOrders.map(o => /*#__PURE__*/React.createElement("tr", {
+    key: o.id
+  }, /*#__PURE__*/React.createElement("td", null, fmtDate(o.date)), /*#__PURE__*/React.createElement("td", null, "#", o.number || "—"), /*#__PURE__*/React.createElement("td", {
+    style: {
+      fontWeight: 600
+    }
+  }, o.client), /*#__PURE__*/React.createElement("td", null, o.kind || "—"), /*#__PURE__*/React.createElement("td", {
+    style: {
+      fontWeight: 600
+    }
+  }, fmt(o.total)))))))), /*#__PURE__*/React.createElement("div", {
     style: card
   }, /*#__PURE__*/React.createElement("div", {
     style: {
@@ -6880,12 +8142,12 @@ function Finance({
       fontWeight: 700,
       marginBottom: 12
     }
-  }, "Despesas lan\xE7adas"), expenses.length === 0 ? /*#__PURE__*/React.createElement("p", {
+  }, "Despesas lan\xE7adas no per\xEDodo"), expenses.length === 0 ? /*#__PURE__*/React.createElement("p", {
     style: {
       fontSize: 13,
       color: "#6f8072"
     }
-  }, "Nenhuma despesa lan\xE7ada ainda.") : /*#__PURE__*/React.createElement("div", {
+  }, "Nenhuma despesa neste per\xEDodo.") : /*#__PURE__*/React.createElement("div", {
     className: "table-scroll"
   }, /*#__PURE__*/React.createElement("table", null, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", null, "Data"), /*#__PURE__*/React.createElement("th", null, "Descri\xE7\xE3o"), /*#__PURE__*/React.createElement("th", null, "Categoria"), /*#__PURE__*/React.createElement("th", null, "Valor"), /*#__PURE__*/React.createElement("th", null))), /*#__PURE__*/React.createElement("tbody", null, expenses.map(e => /*#__PURE__*/React.createElement("tr", {
     key: e.id
@@ -7000,6 +8262,7 @@ function Storefront({
       client: selectedClient.trim(),
       phone: cl ? cl.phone : "",
       source: "painel",
+      payment: "Não Pago",
       date: todayISO(),
       kind: pk ? pk.name : "Monte o seu",
       items: cartItems.map(i => ({
@@ -7014,7 +8277,7 @@ function Storefront({
   };
   return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(SectionTitle, {
     title: "App do Cliente",
-    subtitle: pk ? `${pk.name}: ${PACK_SIZE} sabores diferentes por ${fmt(packPrices[pk.id])}` : `Monte o seu: mínimo de ${MIN_QTY} marmitas e até ${MAX_TYPES} sabores`,
+    subtitle: pk ? `${pk.name}: ${PACK_SIZE} sabores diferentes por ${fmt(packPrices[pk.id])}` : "Monte o seu: o cliente escolhe livremente",
     action: /*#__PURE__*/React.createElement("select", {
       style: {
         ...inputStyle,
@@ -7196,71 +8459,26 @@ function Storefront({
     value: c.name
   }))), /*#__PURE__*/React.createElement("div", {
     style: {
-      display: "flex",
-      flexDirection: "column",
-      gap: 10,
-      marginBottom: 14
+      marginBottom: 14,
+      fontSize: 12.5,
+      color: "#526355"
     }
-  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+  }, pk ? /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
-      justifyContent: "space-between",
-      fontSize: 11.5,
-      marginBottom: 4
+      justifyContent: "space-between"
     }
-  }, /*#__PURE__*/React.createElement("span", {
-    style: {
-      color: "#6f8072"
-    }
-  }, "Marmitas"), /*#__PURE__*/React.createElement("span", {
+  }, /*#__PURE__*/React.createElement("span", null, "Sabores escolhidos"), /*#__PURE__*/React.createElement("span", {
     style: {
       fontWeight: 700,
       color: meetsMin ? "#4a9a5a" : "#1c2b1f"
     }
-  }, totalQty, " / ", MIN_QTY, " m\xEDn.")), /*#__PURE__*/React.createElement("div", {
-    style: {
-      height: 6,
-      background: "#eef1ea",
-      borderRadius: 999,
-      overflow: "hidden"
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      width: `${Math.min(100, totalQty / MIN_QTY * 100)}%`,
-      height: "100%",
-      background: meetsMin ? "#4a9a5a" : "#e8833a"
-    }
-  }))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+  }, distinctTypes, " / ", PACK_SIZE)) : /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
-      justifyContent: "space-between",
-      fontSize: 11.5,
-      marginBottom: 4
+      justifyContent: "space-between"
     }
-  }, /*#__PURE__*/React.createElement("span", {
-    style: {
-      color: "#6f8072"
-    }
-  }, "Sabores"), /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontWeight: 700
-    }
-  }, distinctTypes, " / ", MAX_TYPES, " m\xE1x.")), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      gap: 4
-    }
-  }, Array.from({
-    length: MAX_TYPES
-  }).map((_, i) => /*#__PURE__*/React.createElement("div", {
-    key: i,
-    style: {
-      flex: 1,
-      height: 6,
-      borderRadius: 999,
-      background: i < distinctTypes ? "#8bc543" : "#eef1ea"
-    }
-  }))))), cartItems.length === 0 && /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("span", null, totalQty, " ", totalQty === 1 ? "marmita" : "marmitas"), /*#__PURE__*/React.createElement("span", null, distinctTypes, " ", distinctTypes === 1 ? "sabor" : "sabores"))), cartItems.length === 0 && /*#__PURE__*/React.createElement("div", {
     style: {
       textAlign: "center",
       padding: "20px 10px",
@@ -7313,7 +8531,7 @@ function Storefront({
     },
     onClick: checkout,
     disabled: !meetsMin
-  }, meetsMin ? "Finalizar pedido" : `Faltam ${MIN_QTY - totalQty} marmitas`)))));
+  }, meetsMin ? "Finalizar pedido" : "Escolha uma marmita")))));
 }
 const root = ReactDOM.createRoot(document.getElementById("root"));
 root.render( /*#__PURE__*/React.createElement(App, null));
