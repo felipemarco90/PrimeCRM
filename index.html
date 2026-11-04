@@ -935,7 +935,7 @@ const LINES = [{
   name: "Linha Especial",
   icon: "star",
   tone: "lime",
-  desc: "Toda semana o Kit Semanal leva 1 item desta linha."
+  desc: "Itens especiais, vendidos separadamente. Não fazem parte do pack."
 }, {
   id: "prosaude",
   name: "Linha Pró-Saúde",
@@ -1236,22 +1236,36 @@ async function compressImage(file) {
   } catch (e) {
     throw new Error("Não foi possível ler esta imagem.");
   }
-  const MAX = 640,
-    k = Math.min(1, MAX / Math.max(bmp.width, bmp.height));
-  const w = Math.max(1, Math.round(bmp.width * k)),
-    h = Math.max(1, Math.round(bmp.height * k));
-  const cv = document.createElement("canvas");
-  cv.width = w;
-  cv.height = h;
-  const cx = cv.getContext("2d");
-  cx.fillStyle = "#fff";
-  cx.fillRect(0, 0, w, h);
-  cx.drawImage(bmp, 0, 0, w, h);
-  const toBlob = (type, q) => new Promise(res => cv.toBlob(res, type, q));
-  let blob = await toBlob("image/webp", 0.72);
-  if (!blob || blob.type !== "image/webp") blob = await toBlob("image/jpeg", 0.72);
-  if (!blob) throw new Error("Não foi possível preparar a imagem.");
-  return blob;
+  const LIMIT = 190 * 1024; // o bucket aceita até 200 KB
+  let MAX = 1100,
+    best = null;
+  for (let tries = 0; tries < 4 && !best; tries++) {
+    const k = Math.min(1, MAX / Math.max(bmp.width, bmp.height));
+    const w = Math.max(1, Math.round(bmp.width * k)),
+      h = Math.max(1, Math.round(bmp.height * k));
+    const cv = document.createElement("canvas");
+    cv.width = w;
+    cv.height = h;
+    const cx = cv.getContext("2d");
+    cx.imageSmoothingEnabled = true;
+    cx.imageSmoothingQuality = "high";
+    cx.fillStyle = "#fff";
+    cx.fillRect(0, 0, w, h);
+    cx.drawImage(bmp, 0, 0, w, h);
+    const toBlob = (type, q) => new Promise(res => cv.toBlob(res, type, q));
+    for (const q of [0.82, 0.74, 0.66, 0.58, 0.5]) {
+      let blob = await toBlob("image/webp", q);
+      if (!blob || blob.type !== "image/webp") blob = await toBlob("image/jpeg", q);
+      if (!blob) throw new Error("Não foi possível preparar a imagem.");
+      if (blob.size <= LIMIT) {
+        best = blob;
+        break;
+      }
+    }
+    MAX = Math.round(MAX * 0.8);
+  }
+  if (!best) throw new Error("Esta foto ficou grande demais. Tente uma foto menor.");
+  return best;
 }
 async function uploadMealPhoto(mealId, blob) {
   const ext = blob.type === "image/webp" ? "webp" : "jpg";
@@ -6001,7 +6015,7 @@ function loadHtml2Canvas() {
   }
   return h2cPromise;
 }
-async function folderImage(name, showToast) {
+async function folderImage(name, showToast, parts) {
   const el = document.getElementById("folder-sheet");
   if (!el) return;
   showToast("Gerando a imagem…");
@@ -6010,24 +6024,76 @@ async function folderImage(name, showToast) {
     try {
       await document.fonts.ready;
     } catch (e) {}
-    const cv = await h2c(el, {
-      scale: 2,
-      useCORS: true,
-      backgroundColor: "#f6efdc",
-      logging: false,
-      windowWidth: 1024
-    });
-    const blob = await new Promise(r => cv.toBlob(r, "image/jpeg", 0.92));
-    if (!blob) throw new Error("blob");
-    const file = new File([blob], name + ".jpg", {
+    const SC = 2;
+    // imagem alta demais é cortada no chat do WhatsApp: se precisar, alarga o folder (o espaço extra vai para a lista) até a proporção 0,72
+    const natH = el.getBoundingClientRect().height;
+    const wide = Math.max(1024, Math.ceil(natH * 0.72));
+    const oldW = el.style.width;
+    el.style.width = wide + "px";
+    let cv;
+    try {
+      cv = await h2c(el, {
+        scale: SC,
+        useCORS: true,
+        backgroundColor: "#f6efdc",
+        logging: false,
+        windowWidth: wide
+      });
+    } finally {
+      el.style.width = oldW;
+    }
+    const toBlob = c => new Promise(r => c.toBlob(r, "image/jpeg", 0.92));
+    let cuts = [];
+    if (parts === 2) {
+      // corta no vão entre dois blocos do folder, o mais perto do meio
+      const top = el.getBoundingClientRect().top,
+        H = el.getBoundingClientRect().height;
+      const kids = Array.from(el.children).map(c => c.getBoundingClientRect()).map(r => ({
+        t: r.top - top,
+        b: r.bottom - top
+      }));
+      let best = null;
+      for (let i = 1; i < kids.length; i++) {
+        const y = (kids[i - 1].b + kids[i].t) / 2;
+        if (y > 300 && y < H - 300 && (best == null || Math.abs(y - H / 2) < Math.abs(best - H / 2))) best = y;
+      }
+      if (best != null) cuts = [0, Math.round(best * SC), cv.height];
+    }
+    const blobs = [];
+    if (cuts.length) {
+      for (let i = 0; i < 2; i++) {
+        const c = document.createElement("canvas");
+        c.width = cv.width;
+        c.height = cuts[i + 1] - cuts[i];
+        const g = c.getContext("2d");
+        g.fillStyle = "#f6efdc";
+        g.fillRect(0, 0, c.width, c.height);
+        g.drawImage(cv, 0, cuts[i], cv.width, c.height, 0, 0, cv.width, c.height);
+        blobs.push(await toBlob(c));
+      }
+    } else {
+      // formato 4:5 (retrato): o WhatsApp mostra inteiro no chat; imagem muito alta ele corta.
+      const w = Math.max(cv.width, Math.round(cv.height * 0.72));
+      const c = document.createElement("canvas");
+      c.width = w;
+      c.height = cv.height;
+      const g = c.getContext("2d");
+      g.fillStyle = "#f6efdc";
+      g.fillRect(0, 0, c.width, c.height);
+      g.drawImage(cv, Math.round((w - cv.width) / 2), 0);
+      blobs.push(await toBlob(c));
+    }
+    if (blobs.some(x => !x)) throw new Error("blob");
+    const names = blobs.length > 1 ? blobs.map((_, i) => name + "-parte" + (i + 1) + ".jpg") : [name + ".jpg"];
+    const files = blobs.map((bl, i) => new File([bl], names[i], {
       type: "image/jpeg"
-    });
+    }));
     if (/Android|iPhone|iPad|iPod/i.test(navigator.userAgent || "") && navigator.canShare && navigator.canShare({
-      files: [file]
+      files
     })) {
       try {
         await navigator.share({
-          files: [file],
+          files,
           title: "Cardápio 360 Food"
         });
         showToast("Pronto!");
@@ -6036,14 +6102,16 @@ async function folderImage(name, showToast) {
         if (e && e.name === "AbortError") return;
       }
     }
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = name + ".jpg";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 20000);
-    showToast("Imagem baixada. É só enviar pelo WhatsApp.");
+    blobs.forEach((bl, i) => setTimeout(() => {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(bl);
+      a.download = names[i];
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 20000);
+    }, i * 700));
+    showToast(blobs.length > 1 ? "2 imagens baixadas. Envie as duas pelo WhatsApp, na ordem." : "Imagem baixada. É só enviar pelo WhatsApp.");
   } catch (e) {
     showToast("Não consegui gerar a imagem. Use “Salvar em PDF”.");
   }
@@ -6052,9 +6120,11 @@ const FOLDER_LOGO = "data:image/webp;base64,UklGRoZuAABXRUJQVlA4WAoAAAAQAAAA6QEA
 function FolderPhoto({
   src,
   width,
-  height,
+  maxH,
   radius = 18
 }) {
+  // a moldura segue a proporção real da foto: nada é cortado nem esticado.
+  // se a foto for alta demais, a moldura fica mais estreita (e centralizada) em vez de cortar.
   const [ratio, setRatio] = useState(0.75);
   useEffect(() => {
     let on = true;
@@ -6067,23 +6137,32 @@ function FolderPhoto({
       on = false;
     };
   }, [src]);
-  const r = Math.min(Math.max(ratio, 0.6), 1.0);
-  const w = width || Math.round(Math.min(Math.max(height / r, 190), 340));
-  const h = height || Math.round(width * r);
+  const lim = maxH || 360;
+  let w = width,
+    h = Math.round(width * ratio);
+  if (h > lim) {
+    h = lim;
+    w = Math.round(lim / ratio);
+  }
   return /*#__PURE__*/React.createElement("div", {
     style: {
+      width: width,
+      display: "flex",
+      justifyContent: "center",
+      flexShrink: 0
+    }
+  }, /*#__PURE__*/React.createElement("img", {
+    src: src,
+    alt: "",
+    crossOrigin: "anonymous",
+    style: {
+      display: "block",
       width: w,
       height: h,
       borderRadius: radius,
-      overflow: "hidden",
-      backgroundImage: "url(" + src + ")",
-      backgroundSize: "cover",
-      backgroundPosition: "center 40%",
-      backgroundRepeat: "no-repeat",
-      flexShrink: 0,
       boxShadow: "0 6px 16px rgba(43,63,20,0.15)"
     }
-  });
+  }));
 }
 async function latestPackImg() {
   try {
@@ -6201,7 +6280,7 @@ function FolderPage({
     },
     especial: {
       brush: "#b8841a",
-      tag: "Todo kit semanal leva 1 item desta linha.",
+      tag: "Itens especiais, vendidos separadamente.",
       tagColor: "#a06f0f",
       word: "ESPECIAL"
     }
@@ -6227,15 +6306,16 @@ function FolderPage({
   };
   const panel = {
     position: "relative",
-    margin: "14px 22px 0",
-    borderRadius: 22,
+    margin: "8px 10px 0",
+    borderRadius: 20,
     background: "rgba(255,255,255,0.5)",
     border: "1px solid rgba(62,90,28,0.12)",
     overflow: "hidden"
   };
   const photoBox = (src, w) => src ? /*#__PURE__*/React.createElement(FolderPhoto, {
     src: src,
-    width: w
+    width: w,
+    maxH: 340
   }) : /*#__PURE__*/React.createElement("div", {
     style: {
       width: w,
@@ -6251,7 +6331,14 @@ function FolderPage({
     size: 64,
     color: "#fff"
   }));
-  const rows = l => /*#__PURE__*/React.createElement("div", null, itemsOf(l).map(m => {
+  const rows = l => /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      flexDirection: "column",
+      flex: 1,
+      minHeight: 0
+    }
+  }, itemsOf(l).map(m => {
     const p = price(m.price);
     return /*#__PURE__*/React.createElement("div", {
       key: m.id,
@@ -6259,7 +6346,9 @@ function FolderPage({
         display: "flex",
         alignItems: "center",
         gap: 12,
-        padding: "9px 0",
+        padding: "4px 0",
+        flex: "1 1 auto",
+        maxHeight: 72,
         borderBottom: "1px solid rgba(43,63,20,0.12)"
       }
     }, /*#__PURE__*/React.createElement("div", {
@@ -6501,35 +6590,44 @@ function FolderPage({
   }, /*#__PURE__*/React.createElement("div", {
     style: {
       position: "relative",
-      height: 250,
+      height: 160,
       overflow: "hidden"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "absolute",
+      left: "50%",
+      marginLeft: -512,
+      top: 0,
+      width: 1024,
+      height: 160
     }
   }, /*#__PURE__*/React.createElement("img", {
     src: FOLDER_LOGO,
     alt: "360 Food",
     style: {
       position: "absolute",
-      left: 52,
-      top: 40,
-      width: 430,
+      left: 40,
+      top: 22,
+      width: 360,
       height: "auto",
       display: "block"
     }
   }), /*#__PURE__*/React.createElement("div", {
     style: {
       position: "absolute",
-      left: 520,
-      top: 44,
-      height: 160,
+      left: 436,
+      top: 24,
+      height: 112,
       width: 2,
       background: "rgba(43,63,20,0.55)"
     }
   }), /*#__PURE__*/React.createElement("div", {
     style: {
       position: "absolute",
-      left: 552,
-      top: 44,
-      width: 400
+      left: 466,
+      top: 24,
+      width: 520
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
@@ -6543,7 +6641,7 @@ function FolderPage({
     style: {
       display: "flex",
       gap: 10,
-      marginTop: 18
+      marginTop: 8
     }
   }, [["leaf", "Ingredientes", "selecionados"], ["heart", "Mais saúde", "e bem-estar"], ["clock", "Praticidade", "no seu dia"]].map(x => /*#__PURE__*/React.createElement("div", {
     key: x[0],
@@ -6575,9 +6673,100 @@ function FolderPage({
     size: 34,
     color: DEEP,
     strokeWidth: 1.8
-  })), x[1], /*#__PURE__*/React.createElement("br", null), x[2]))))), lines.map(l => {
+  })), x[1], /*#__PURE__*/React.createElement("br", null), x[2])))))), lines.map(l => {
     const photo = photoOf(l);
     const isTrad = l.id === "tradicional";
+    const its = itemsOf(l);
+    if (its.length <= 3 && l.id !== "tradicional" && l.id !== "prosaude") {
+      // poucas refeições, sem pack: faixa compacta com um cartão por refeição
+      return /*#__PURE__*/React.createElement("div", {
+        key: l.id,
+        style: panel
+      }, /*#__PURE__*/React.createElement("div", {
+        style: {
+          display: "flex",
+          gap: 20,
+          padding: "14px 18px 14px 22px",
+          alignItems: "center"
+        }
+      }, /*#__PURE__*/React.createElement("div", {
+        style: {
+          flex: "0 0 372px"
+        }
+      }, title(l)), /*#__PURE__*/React.createElement("div", {
+        style: {
+          flex: 1,
+          display: "flex",
+          gap: 12,
+          minWidth: 0
+        }
+      }, its.map(m => {
+        const p = price(m.price);
+        return /*#__PURE__*/React.createElement("div", {
+          key: m.id,
+          style: {
+            flex: "1 1 0",
+            maxWidth: its.length === 1 ? 460 : 330,
+            minWidth: 0,
+            display: "flex",
+            gap: 12,
+            alignItems: "center",
+            background: "rgba(255,255,255,0.75)",
+            border: "1px solid rgba(62,90,28,0.14)",
+            borderRadius: 18,
+            padding: 10
+          }
+        }, m.photo ? /*#__PURE__*/React.createElement(FolderPhoto, {
+          src: m.photo,
+          width: 118,
+          maxH: 118,
+          radius: 12
+        }) : /*#__PURE__*/React.createElement("div", {
+          style: {
+            width: 118,
+            height: 118,
+            borderRadius: 12,
+            background: "linear-gradient(135deg,#dfe8c8,#c3d49a)",
+            flexShrink: 0
+          }
+        }), /*#__PURE__*/React.createElement("div", {
+          style: {
+            minWidth: 0,
+            flex: 1
+          }
+        }, /*#__PURE__*/React.createElement("div", {
+          style: {
+            fontSize: 16,
+            lineHeight: 1.25,
+            fontWeight: 600
+          }
+        }, m.name), m.desc && m.desc.trim() !== m.name.trim() && /*#__PURE__*/React.createElement("div", {
+          style: {
+            fontSize: 11.5,
+            lineHeight: 1.3,
+            color: "#5b6b45",
+            marginTop: 3
+          }
+        }, m.desc), /*#__PURE__*/React.createElement("div", {
+          style: {
+            marginTop: 6,
+            fontWeight: 800,
+            fontSize: 24,
+            color: DEEP
+          }
+        }, /*#__PURE__*/React.createElement("span", {
+          style: {
+            fontSize: 12,
+            fontWeight: 600,
+            marginRight: 3
+          }
+        }, "R$"), p.r, /*#__PURE__*/React.createElement("span", {
+          style: {
+            fontSize: 15
+          }
+        }, p.c))));
+      }))));
+    }
     return /*#__PURE__*/React.createElement("div", {
       key: l.id,
       style: panel
@@ -6586,12 +6775,20 @@ function FolderPage({
         display: "grid",
         gridTemplateColumns: "1fr 400px",
         gap: 22,
-        padding: "22px 22px 22px 26px",
+        padding: "14px 18px 14px 22px",
         alignItems: "stretch"
       }
-    }, /*#__PURE__*/React.createElement("div", null, title(l), /*#__PURE__*/React.createElement("div", {
+    }, /*#__PURE__*/React.createElement("div", {
       style: {
-        marginTop: 12
+        display: "flex",
+        flexDirection: "column"
+      }
+    }, title(l), /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginTop: 12,
+        flex: 1,
+        display: "flex",
+        flexDirection: "column"
       }
     }, rows(l))), isTrad && packTrad ? /*#__PURE__*/React.createElement("div", {
       style: {
@@ -6702,6 +6899,7 @@ function FolderPage({
     }, photo ? /*#__PURE__*/React.createElement(FolderPhoto, {
       src: photo,
       width: 364,
+      maxH: 330,
       radius: 14
     }) : /*#__PURE__*/React.createElement("div", {
       style: {
@@ -6855,11 +7053,11 @@ function FolderPage({
   }), /*#__PURE__*/React.createElement("div", {
     style: {
       position: "relative",
-      margin: "18px 22px 0",
-      borderRadius: 22,
+      margin: "10px 10px 0",
+      borderRadius: 20,
       background: "linear-gradient(90deg," + ORG + "," + YEL + ")",
       color: DEEP,
-      padding: "16px 28px",
+      padding: "12px 28px",
       display: "flex",
       alignItems: "center",
       justifyContent: "space-between",
@@ -6901,9 +7099,9 @@ function FolderPage({
   }, CONTACT.whatsapp))), /*#__PURE__*/React.createElement("div", {
     style: {
       position: "relative",
-      marginTop: 18,
+      marginTop: 10,
       background: DEEP,
-      padding: "20px 28px",
+      padding: "14px 28px",
       display: "flex",
       gap: 22,
       alignItems: "center"
