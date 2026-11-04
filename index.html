@@ -6,7 +6,7 @@
 <title>360° food — Site &amp; CRM</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&family=Caveat:wght@600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
 <style>
   :root {
     --bg: #fbfaf6; --surface: #ffffff; --ink: #1c2b1f; --muted: #6f8072; --border: #e4e8df;
@@ -42,6 +42,18 @@
   .lp-navlink::after { content:''; position:absolute; left:0; bottom:-4px; width:0; height:2px; background:#8bc543; transition: width 0.2s ease; }
   .lp-navlink:hover::after { width:100%; }
   .table-scroll { overflow-x: auto; }
+  @media (max-width: 640px) { .folder-grid, .folder-foot { grid-template-columns: 1fr !important; } .folder-bottom { grid-template-columns: 1fr !important; } .folder-feat { grid-template-columns: repeat(2, 1fr) !important; row-gap: 10px; } }
+  @media print {
+    @page { size: A4; margin: 8mm; }
+    html, body { background: #f5eedb !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    body * { visibility: hidden !important; }
+    #folder-sheet, #folder-sheet * { visibility: visible !important; }
+    #folder-sheet { position: absolute !important; left: 0; top: 0; width: 100% !important; max-width: none !important; box-shadow: none !important; border-radius: 0 !important; }
+    .folder-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+    .folder-foot { grid-template-columns: 1fr 1fr !important; }
+    .folder-pack { grid-template-columns: 250px 1fr !important; }
+    .folder-feat { grid-template-columns: repeat(4, 1fr) !important; }
+  }
   @media (max-width: 900px) {
     .lp-hero-grid { grid-template-columns: 1fr !important; }
     .lp-hero-visual { display: none !important; }
@@ -1160,9 +1172,20 @@ async function sb(path, opts) {
     } catch (e) {}
     const e = new Error(errMessage(r.res, r.data));
     e.status = r.res.status;
+    e.code = r.data && typeof r.data === "object" ? r.data.code : "";
     throw e;
   }
   return r.data;
+}
+
+/* Leitura que esconde os registros "deletados" (exclusão lógica). Se o banco ainda não tem a coluna, lê sem o filtro. */
+async function sbLive(path) {
+  try {
+    return await sb(path + (path.indexOf("?") >= 0 ? "&" : "?") + "deleted=eq.false");
+  } catch (e) {
+    if (e && (e.code === "42703" || e.code === "PGRST204")) return sb(path);
+    throw e;
+  }
 }
 async function signIn(email, password) {
   setSession(null);
@@ -1300,7 +1323,8 @@ const mapMeal = {
     active: !!r.active,
     ingredients: r.ingredients || [],
     photo: r.photo_url || "",
-    sortOrder: r.sort_order
+    sortOrder: r.sort_order,
+    gift: r.gift === undefined ? undefined : !!r.gift
   }),
   to: m => ({
     id: m.id,
@@ -1315,7 +1339,10 @@ const mapMeal = {
     active: !!m.active,
     ingredients: m.ingredients || [],
     photo_url: m.photo || "",
-    sort_order: m.sortOrder == null ? 999 : m.sortOrder
+    sort_order: m.sortOrder == null ? 999 : m.sortOrder,
+    ...(m.gift === undefined ? {} : {
+      gift: !!m.gift
+    })
   })
 };
 const mapClient = {
@@ -1388,6 +1415,32 @@ const mapOrder = {
     source: o.source || "painel"
   })
 };
+const mapPurchase = {
+  from: r => ({
+    id: r.id,
+    name: r.name,
+    qty: num(r.qty),
+    unit: r.unit || "un",
+    total: num(r.total),
+    status: r.status || "A caminho",
+    date: r.purchase_date || "",
+    receivedAt: r.received_at || null,
+    stockId: r.stock_id || null,
+    note: r.note || ""
+  }),
+  to: x => ({
+    id: x.id,
+    name: x.name,
+    qty: num(x.qty),
+    unit: x.unit || "un",
+    total: num(x.total),
+    status: x.status || "A caminho",
+    purchase_date: x.date || todayISO(),
+    received_at: x.receivedAt || null,
+    stock_id: x.stockId || null,
+    note: x.note || ""
+  })
+};
 const mapExpense = {
   from: r => ({
     id: r.id,
@@ -1455,7 +1508,13 @@ function usePersisted(table, mapper, onError) {
           body: ups.map(mapper.to)
         });
         if (dels.length) await sb("/rest/v1/" + table + "?id=in.(" + dels.map(x => x.id).join(",") + ")", {
-          method: "DELETE"
+          method: "PATCH",
+          headers: {
+            Prefer: "return=minimal"
+          },
+          body: {
+            deleted: true
+          }
         });
       }).catch(e => {
         errRef.current && errRef.current(e);
@@ -1544,6 +1603,10 @@ const NAV = [{
   id: "menu",
   label: "Cardápio & Preços",
   icon: "utensils"
+}, {
+  id: "folder",
+  label: "Folder",
+  icon: "store"
 }, {
   id: "stock",
   label: "Estoque",
@@ -1845,8 +1908,9 @@ function App() {
   const [stock, setStock, replaceStock] = usePersisted("f360_stock", mapStock, saveFail);
   const [orders, setOrders, replaceOrders, ordersQ] = usePersisted("f360_orders", mapOrder, saveFail);
   const [expenses, setExpenses, replaceExpenses] = usePersisted("f360_expenses", mapExpense, saveFail);
+  const [purchases, setPurchases, replacePurchases] = usePersisted("f360_purchases", mapPurchase, saveFail);
   const loadPublic = async () => {
-    const [m, pp] = await Promise.all([sb("/rest/v1/f360_meals?select=*&order=sort_order.asc,created_at.asc"), sb("/rest/v1/f360_pack_prices?select=*")]);
+    const [m, pp] = await Promise.all([sbLive("/rest/v1/f360_meals?select=*&order=sort_order.asc,created_at.asc"), sb("/rest/v1/f360_pack_prices?select=*")]);
     replaceMeals(m.map(mapMeal.from));
     const prices = Object.assign({}, DEFAULT_PACK_PRICES);
     pp.forEach(r => {
@@ -1855,7 +1919,7 @@ function App() {
     setPackPricesState(prices);
   };
   const loadStaff = async () => {
-    const [c, o, st, ex, sp] = await Promise.all([sb("/rest/v1/f360_customers?select=*&order=created_at.desc"), sb("/rest/v1/f360_orders?select=*&order=order_date.desc,created_at.desc&limit=1000"), sb("/rest/v1/f360_stock?select=*&order=name.asc"), sb("/rest/v1/f360_expenses?select=*&order=expense_date.desc,created_at.desc"), sb("/rest/v1/f360_meal_specs?select=*")]);
+    const [c, o, st, ex, sp, pu] = await Promise.all([sbLive("/rest/v1/f360_customers?select=*&order=created_at.desc"), sbLive("/rest/v1/f360_orders?select=*&order=order_date.desc,created_at.desc&limit=1000"), sbLive("/rest/v1/f360_stock?select=*&order=name.asc"), sbLive("/rest/v1/f360_expenses?select=*&order=expense_date.desc,created_at.desc"), sbLive("/rest/v1/f360_meal_specs?select=*"), sbLive("/rest/v1/f360_purchases?select=*&order=purchase_date.desc,created_at.desc").catch(() => [])]);
     const sm = {};
     sp.forEach(r => {
       sm[r.meal_id] = r.items || [];
@@ -1865,6 +1929,7 @@ function App() {
     replaceOrders(o.map(mapOrder.from));
     replaceStock(st.map(mapStock.from));
     replaceExpenses(ex.map(mapExpense.from));
+    replacePurchases((Array.isArray(pu) ? pu : []).map(mapPurchase.from));
   };
   reloadRef.current = async () => {
     try {
@@ -2478,6 +2543,10 @@ function App() {
     specs: specs,
     saveSpec: saveSpec,
     showToast: showToast
+  }), view === "folder" && /*#__PURE__*/React.createElement(FolderPage, {
+    meals: meals,
+    packPrices: packPrices,
+    showToast: showToast
   }), view === "menu" && /*#__PURE__*/React.createElement(MenuPricing, {
     meals: meals,
     setMeals: setMeals,
@@ -2488,6 +2557,10 @@ function App() {
     orders: orders,
     meals: meals,
     specs: specs,
+    stock: stock,
+    setStock: setStock,
+    purchases: purchases,
+    setPurchases: setPurchases,
     showToast: showToast
   }), view === "stock" && /*#__PURE__*/React.createElement(Stock, {
     stock: stock,
@@ -2850,13 +2923,12 @@ function MealPhoto({
     src: src,
     alt: alt,
     loading: "lazy",
-    width: size,
-    height: size,
     onError: () => setBad(true),
     style: {
-      width: size,
       height: size,
-      objectFit: "cover",
+      width: "auto",
+      maxWidth: Math.round(size * 1.8),
+      objectFit: "contain",
       borderRadius: 12,
       flexShrink: 0,
       background: "#f1f6ee"
@@ -5450,6 +5522,20 @@ function Orders({
   cycleStatus,
   showToast
 }) {
+  const [delId, setDelId] = useState(null);
+  const delTimer = useRef(null);
+  const askDelete = o => {
+    if (delId === o.id) {
+      clearTimeout(delTimer.current);
+      setDelId(null);
+      setOrders(prev => prev.filter(x => x.id !== o.id));
+      showToast("Pedido excluído. Ele continua guardado no banco, marcado como deletado.");
+      return;
+    }
+    setDelId(o.id);
+    clearTimeout(delTimer.current);
+    delTimer.current = setTimeout(() => setDelId(null), 4000);
+  };
   const [editO, setEditO] = useState(null);
   const [posO, setPosO] = useState(null);
   const [posText, setPosText] = useState("");
@@ -5692,7 +5778,18 @@ function Orders({
     size: 13
   })), /*#__PURE__*/React.createElement(EditBtn, {
     onClick: () => setEditO(o)
-  }), ["Entregue", "Aguardando Entrega", "Aguardando Retirada"].includes(o.status) && /*#__PURE__*/React.createElement("button", {
+  }), o.status === "Cancelado" && /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: () => askDelete(o),
+    style: {
+      ...btnGhost,
+      padding: "6px 11px",
+      fontSize: 12,
+      color: "#d6483f",
+      borderColor: "#f0cfcb",
+      background: delId === o.id ? "#fdeeed" : "#fff"
+    }
+  }, delId === o.id ? "Confirmar exclusão?" : "Excluir"), ["Entregue", "Aguardando Entrega", "Aguardando Retirada"].includes(o.status) && /*#__PURE__*/React.createElement("button", {
     type: "button",
     onClick: () => openPos(o),
     style: {
@@ -5813,6 +5910,1030 @@ function CheckRow({
     size: 14
   }), children);
 }
+function brushPath(seed, n, pow) {
+  const pts = [];
+  let r = seed;
+  const rnd = () => {
+    r = (r * 9301 + 49297) % 233280;
+    return r / 233280;
+  };
+  for (let i = 0; i < n; i++) {
+    const a = i / n * Math.PI * 2;
+    const c = Math.cos(a),
+      s = Math.sin(a);
+    const k = Math.pow(Math.pow(Math.abs(c), pow) + Math.pow(Math.abs(s), pow), -1 / pow);
+    const j = 1 - 0.04 * rnd();
+    pts.push([50 + 50 * c * k * j, 50 + 50 * s * k * j]);
+  }
+  return "M" + pts.map(p => p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" L") + " Z";
+}
+function Brush({
+  seed = 3,
+  pow = 4,
+  color = "#1a4d2e",
+  n = 70
+}) {
+  return /*#__PURE__*/React.createElement("svg", {
+    viewBox: "0 0 100 100",
+    preserveAspectRatio: "none",
+    style: {
+      position: "absolute",
+      left: 0,
+      top: 0,
+      width: "100%",
+      height: "100%"
+    },
+    "aria-hidden": "true"
+  }, /*#__PURE__*/React.createElement("path", {
+    d: brushPath(seed, n, pow),
+    fill: color
+  }));
+}
+const FOLDER_FONTS = "https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&family=Caveat:wght@600;700&display=swap";
+function folderPrint() {
+  const el = document.getElementById("folder-sheet");
+  if (!el) return;
+  const html = "<!doctype html><html><head><meta charset=\"utf-8\"><link href=\"" + FOLDER_FONTS + "\" rel=\"stylesheet\"><style>html,body{margin:0;padding:0;background:#f6efdc;-webkit-print-color-adjust:exact;print-color-adjust:exact}#folder-sheet{width:1024px!important;margin:0!important;box-shadow:none!important;border-radius:0!important}</style></head><body>" + el.outerHTML + "</body></html>";
+  const f = document.createElement("iframe");
+  f.style.cssText = "position:fixed;left:-3000px;top:0;width:1024px;height:1200px;border:0;";
+  f.onload = async () => {
+    const d = f.contentDocument,
+      w = f.contentWindow;
+    try {
+      await d.fonts.ready;
+    } catch (e) {}
+    try {
+      await Promise.all(Array.prototype.map.call(d.images, im => im.complete ? 1 : new Promise(r => {
+        im.onload = im.onerror = r;
+      })));
+    } catch (e) {}
+    const h = Math.ceil(d.getElementById("folder-sheet").getBoundingClientRect().height);
+    const st = d.createElement("style");
+    st.textContent = "@page{size:1024px " + h + "px;margin:0}";
+    d.head.appendChild(st);
+    try {
+      w.focus();
+      w.print();
+    } catch (e) {}
+    setTimeout(() => {
+      try {
+        f.remove();
+      } catch (e) {}
+    }, 60000);
+  };
+  f.srcdoc = html;
+  document.body.appendChild(f);
+}
+let h2cPromise = null;
+function loadHtml2Canvas() {
+  if (window.html2canvas) return Promise.resolve(window.html2canvas);
+  if (!h2cPromise) {
+    h2cPromise = new Promise((res, rej) => {
+      const sc = document.createElement("script");
+      sc.src = "https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js";
+      sc.onload = () => window.html2canvas ? res(window.html2canvas) : rej(new Error("h2c"));
+      sc.onerror = () => {
+        h2cPromise = null;
+        rej(new Error("h2c"));
+      };
+      document.head.appendChild(sc);
+    });
+  }
+  return h2cPromise;
+}
+async function folderImage(name, showToast) {
+  const el = document.getElementById("folder-sheet");
+  if (!el) return;
+  showToast("Gerando a imagem…");
+  try {
+    const h2c = await loadHtml2Canvas();
+    try {
+      await document.fonts.ready;
+    } catch (e) {}
+    const cv = await h2c(el, {
+      scale: 2,
+      useCORS: true,
+      backgroundColor: "#f6efdc",
+      logging: false,
+      windowWidth: 1024
+    });
+    const blob = await new Promise(r => cv.toBlob(r, "image/jpeg", 0.92));
+    if (!blob) throw new Error("blob");
+    const file = new File([blob], name + ".jpg", {
+      type: "image/jpeg"
+    });
+    if (/Android|iPhone|iPad|iPod/i.test(navigator.userAgent || "") && navigator.canShare && navigator.canShare({
+      files: [file]
+    })) {
+      try {
+        await navigator.share({
+          files: [file],
+          title: "Cardápio 360 Food"
+        });
+        showToast("Pronto!");
+        return;
+      } catch (e) {
+        if (e && e.name === "AbortError") return;
+      }
+    }
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = name + ".jpg";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 20000);
+    showToast("Imagem baixada. É só enviar pelo WhatsApp.");
+  } catch (e) {
+    showToast("Não consegui gerar a imagem. Use “Salvar em PDF”.");
+  }
+}
+const FOLDER_LOGO = "data:image/webp;base64,UklGRoZuAABXRUJQVlA4WAoAAAAQAAAA6QEAoQAAQUxQSNoZAAABV6KmbQMmHfxR9yuBiCAboCjM7iDp7v9AGQ7aNhIkhz/smd27+ycQERPg0/TX+K/+U0qVkh8PSWn9mUa3+Cm0Q0VK7zSqlp6p/HiVkqKifqZJK4yZammk7uriaDsq2koXFaGoDHulFFSQcp9jZ3S4PLV1eSHSrTX0zJvt1geMBlk79eCSOq0hNM6l3nDZ1tE5lKUdBr2uXUFkjqO+9uog4S2fHPtJ2gJou0qjRRPsKFZi78ZKRpxYMMqo4Pr/T0o4a+3DAHmL6P8EeNu2bVmybdvmje7ukkZE6RIkRCXm//+PtnVd1m1HzvBbRP8nAOO6u0fiD9zbofLvq/lJ7R/XzAulf1nlCyb+YV0w+c9qsc+/ZU8ULv+mSp9UVv6kFqkN/EWVKMZf9Jdo8hd1R3HhD6pOdegPiupP6+9pWfaEv+eezP/35KK6hr/n0iBfom/8OfuwGWBHsefvCaB47f7L+iX78eMPq0PxHEDg78mrSYQ92exVE76/JChuslegsn1N9XVUcP8tyc8W1t+YOI79Tc2Ci5QWBK9Uv9b+vjzPRAMfuhTPFSscfP7vQKEIK1qa7Kj/3l5uzWtc1H9WAYypLtuYPvmb7VL/ujttFBuMe/1eq5LPpr1AiU43AcxQuTLJ8xee6J+H3BKp24sQnV4AmKV2IlcG3I0z7/a7KPICsAAgSKff/H6A6kkcsMzoRZ3wUFWABdDx1eRt7uiOGZayPoM1sqsYAkDcOU7aFt+Y7SUqqlCah53CEOxVwcdEbZp5T90CNBVQC6DXcYL2k9qvfwe1BKSVemWwcIikpQP6CZsY1FMdpLrlSVmFyqsq9MHqVsKhAPWL4C0OPbVJUVdzMSGr0vhlqwT7XFNABnWAN/k2emkX425IdZBrepOxAw3vNhG1/JDG5QB2twsArDvhBCxSoGEJjsbsqWQqEXaLALinJuT8QOn/1/PNaJiCoUfRHgwG3W6v3+u/TufT1+dK2icAEDTh49+JFuUfeYjd0L+OJ9PhaDJbv2+Pp+P7rNOslbIRlw5I3WRk0xcTLTU3Ext3pVop+WiYgjQA4evrcDKdT2frj/3pSuXPZtJvVQvJiKUC3FcZ72SfGkrc1G5OWKr/Ut4jmwYLlMcgtWB/ynRfi8+r/uh1vFitVvvLjeKfj8XstVWJqgC/jF1VQ7cSUI9xdJ2ZtkoBtqj8rioDFI9hXqsVitmnzmTSWm/Ho/35sP+ig8fFoBxSARURKYKO36os/5dpMuMn2xylZ6pi4UtygtgbiCYT4XguE6o/DTrtfmO43azfl+8/dHg3bCVUwEVEUVdH8mtGcXEMYdY7rq7kuqC6oLQIqdcfCHgjyVQyVaqXU+1ubz5bPB/IC//hZlz1qZAXUQOR4QfGT2Zu2qS0AvGEUh+Eltvn9ftT0VixnM01+qXt59uPH1evvzpdC0/rl5JbAYhYlTRlGNGLZFNWzq3gobQB8ZrCVwgtl9fjCYST+VS2PX7tPc9IHhjzsnzJqjCScE4BFf47/6byTbSSW9PSltxAXKOwArUbSHgDwWAwnCjl519nklzynk+zSlCBqoQNBTS1/86O1D5qDnNbcRxQeQmxn0IIvQF/NJnNFavNAcWbMLxNWhkFIOG0Av8IYJqt9qaTy/3NUadF4Y6kmhv0pSqVF1WVS3eB2gI8/rQ/3Sh2FjTdfYYhP55TKkhYU6CU0ob4kvJfIw3FkkJm/xlA6QzU1G59Ko8fCHpSxfbTjuYHRj6P8x4FbgJKgJn7Ad4gvaCwPrrhOC8YDyUbUJc0B+ijvmw93xzu+PvnzYgCEmoAeIrjTc0L8RW1IxyyWjRMU7lXlljAJ9VHCMv1Zrt/vFJ//j3cDxIKSG5U5ptUz41wGP4eGIuUQk3tBVoL2frTy4zS81Rzue2X0XidphQQsB6D+vNRDoF6S10X12q1SiqdyRaa2wf3Oxo4HyQliQ9+6iEMvVafabpX7MkZM5xWFBAwBI0/Rrp73JDAeUrlPMTUQ2jF+gMa3kgeqPz4DVznFRAwAJ0r402FSjhLVJ5DXNDlJIl8+2ZypX1n2/yK2zSsgGDPRivGGyphfVD0oPVY1E4gjJdqdHpO8vtX8NRT1XR00box3lBZsOxRuSwC9dCHk8VXkjxKfs4a++p38FRTQEDPreMeo+wwoBLWIpWrKGiGOuj94UKb8i+S/ORFd/glPJYUEBxbmHy7PIWReAhQCacPVJ5AFKQ2rLCARCx2pOHVpv6wff8WzqIKt46OfkobI3N+VBYt2FK8Q33W9KB1lWMzkuy1BiC50rQfSL5l8zPw2bDSfeqCNMQInR2VdXiphNpLLbTRUHPMx31sKqBjQ0b5PcYnKldhXXhXbP2mIDhpMrp8cULyWXNYv+13M7stMoqQjiq/bB3jU08xB+8phUeQUwttqjq+Uvwhen9bv7Gb2a4dsUGwKprIMD71KJyHt0nhLWzQuvKDLf/llb//vvgt/Jk2FdARQEVAMcanDoVbMFMJ/YuqpPHGSgeaT8nzTPUItwO/A0rR+/jUpvAQ5ltFQ+enGtpUYUAHByQ/FXuS3a6mN+qLLm+Gw/RJAd2KJCvC2LRF4S7MCxSeQ091XVev0/RI4Rd5TlF9id5YtKHxtGyFDShZ/C9Wp/AS5hqV0J800GYaN0lOjp0Znyn92aPzZ/NSVYR0xwrmkO29Vf2/xJ8sN+srlTy8yWyxHHgMNQqf4H5RVA1UlzWhfJXam4wHB954o/SV3tvuva6AjqanCDmKv5vuu6pTflgKlaR4OpcdhS9wn1G4iYIso4E2XhwrziRvs+X1uOVOQU5NLl+8689dP6QY6A48Z7byJx0c38sBlWdRpuc0b+dFJdxVCs9gpPqqS3Yp/eR69nn53r1/vSca3TxJbmVX3vnnfNlWQEfPjumYTi8DlG+ovokwT/FHMR8qYf9QIEBY4wn0nSG/Vv3evPtSXQ8Gk4zfT/H3D+/+vF91I//i5PS22R6IS9/WG0uL9aWlejntiM6O64XOf1x7dOZCJcxFXFG46khqoPUWqP1IUR5ei/niaLRkE3NJf3C+u+vP5i2vKOtmBniguZVA97Rjjm4PzedZ9BUF2yyFrdWj9eXF+mLEDcByGVxVC40v1yK7vyE7AvtqkBmSgGRdr9wduZt3Ajbo7v7Upv1LskP/D90T/Xu6PYaO8kQh3EXQfJw8+Q2o9mpQ2fLEP362NSSHzAEB3ZH21erOvjfTrAH/xIA+3TVDqhjyWbXiEHqksFV1Yd9l/2hHBSkN1FZ0SPXnibzwH/bTgE5bRazz/r2uWBg17+GgeWdQDaM60+cDeqf82DHDoEPdl2qr8ZUpPv8L8lo7mvCzHYpfu2eXDbqS6vMeqDoxrAM1xnWC4UMc0zot+4rCa09FdVwTSMge/Hk/jBnsVP17eFe0GdiMkc04jM7pPtQsMHIFgKWB2oqsnDit1pv5Ynd+OPyclQyoSt9DxZbhXZswdNOEw+iIAbfMahUGBxImwcKJPMl6nW6/22k2q8la0BeLfj+U86ajmJrgHmCngzFofwgGMgpXFtQLAtZlB4ok1KHLb2kwZsDAAsO33UYlmraf6+V8rliqFuOFbNgDWON7eYnA42vAljMq/zvYafwJeTGJPkkjrQl5Gn0iJg8gv8mDUYcyLMcjz4qZyoo2RRfKvya9aGbcjgXjpdE99BnyNAnboLNUsE7/ZgF72gjm31IoYWoTyeXPFEqYeoTx9F0GD2FIkYtZvtpyKl9mojrfKNyv3/ffF2orIQCx9vafkZ0A169lwiCqAeACvKIr9C6oaTiHk5WUjK6RUoeyleLXLaQ8wcmLeLxnyUMenJCE2h9bq/j5p+Vqvd+tRr1Sqzerbcn+czXqj0d88dE/i3j92eYMMoPYRd8H0GYNziFOoI7yPsQDA+pouAzxMKNulbkWdH4r9GP7Ivn1B+myCriRaTaj8KcLHjdC37mdz8eyQTkS5feQO5OSfUD+dg8lqFei/dwVVWVmu2gfVEEU+K9LgJVtVmIuK1+MWO613E6HikHDsJcUMIC+JluqKIfR4EdF+T30P4MF7ou/ucmHfY/KjxfNk4zkJYFIl+T3azWF8u5bTpevQ1lx1nQNzaSRDM6uiE4sOCCjI3AGw0h2Xb2PF9d/QQAzlF/b8YAbgNsTbN6JmFQFIx1Vj+YKWuTtfdhvHR53ciJnLcWn5mQ4TqK4YYHMazuL3uGVRWwzGbzB8KzLQTp/proBPlURmDY/JVR5gpqARwAWMFc9Yt7vTcVB8204tcA7EdVtFBcDtW18WMDMBvN1DTFN6T6Xg4OLz4qVwvK/3A1ZBVBc22Le521d8aG5GL6nJETnJoh+jHow+0UXs6JpLpzzVxK2JccBOLwtYNSGwJS3u+EhEH/uMvxxwmFTMrgZLlLmIgSiUc0FEQEEZHAPDUCi7Fdh/DajakP1QXf9B2Tbx/j9hM0krjhoaPiewoyaItgnJiXRje38OPAaoQVrcGwWV8w0yu/VdDhcrleTfqfVfHOCkU681OVLSPF1B2eGV1vbZH9XSZEfGIpgzzwQbPu25z3Aj9HNFhzIPmYv7df1ZjF9aWai2VK9s/sxYSO3acunuGpuWTRtQRNKr3weUQTY3VXgkeDO9ToF+8WEQQD+vOyby6fF/vP0fbnsFm5PLfOU6zcvsrf9zMZtKHkH54YpG0Reg0sfTM53lXwouPScIKC1MCEAr092vO6nsUQ8kkmXGxGQT71hdlxeJ7oC79cd/HzEPQZHw6mharNEcYOjWHHg566CjwUehMwZxWABfZF2lwPcAHl5bdSmo2c3ws27EPdVq0naZDyUYqKkwW6s4L0FHgwcszHQNBkBQNQJ+/4pDASy3So84e5zOlaa35d8/pKGQTGLZVtXFDG49LlFLuBwV+lHs6t7RlDLhDZ8OGRvJYGgO9niudQrptxvj6CVMXFncW+j2G1AX0EEYH5Xm0cD3WwU9CQfBpIf7SIiPNeeE55kuPHrDsNqUpHSIQuGwr1tTLqiho0PZ1PVQlSfJ6VgO/WQrKIw2e8rYX+u9+sWg0pQsfkF01+0uyuaJEWd/x2oGmGA54SFbcVGzmqj8XxW5+9/75Wh5C9IiLZMZaOMqOXKifYAIKJr/IB6onIc92oCbRsByG75wEe4LBV+D0Q0/YjmACCiayVqmC2Y+ICmNC8IXFTMXETgptH5eQCrakkR0G06zi1zFi/FUbO6iWKY0VN6RNDcRsKzAJchSK4ewLiSVmx0iLQUtSyUwz4V0UMHirKGhfL7YbYT6iLBDaC2nHI6cd65ehE8wm45qOCvgIinhpbsRQEZHSXZXgEZHe2E+WG2EGotIQJgvjjQiZyS7F3+JNl7GDb1Igxe8mFdFqHccmRBF6TcpVrKaGAihuVPSSnUdEIKAGrfguvlusgV2YtXctklyfevOzs3LUt5RV5XjZWXsS6aYSLUCRk3ZZTfoE3oyZjYHRo3EoQuJGRs9Z7uxNss2c48B5OVYrY82JLcbe+qZ2pmowrqEQsGXJA0mJjXwIArGg8NAw6RmimmVofGpaQQCgkpAD53QNd/H7UqvWot181ky8VsJNvp9LYrR15V5lkxCoNetKkBdwXHTIU+bcA3xS5NoZ9NYcaBKpMxNFuScilSOSEBwHIFh5oVl0/F6bCz4LjTmgwqmUI63l46kuWmmQkoSrrFaDAh11KY7BPAhPyWUmSyJUA/hRMjpm8Nj/8kxWKgwnpCEvZYQXPdLlvl187z5vw+HHCcaRSytafzo2i0si4F9fCcKmBEdgp/ajO9B6nXiGRS0GJ6DOIkks+COyoxPCltIHDpn4SIAk8acv4yHnWfWp1WvcVBrVkotmd8kNNqJgt7QNcynUhCZr/9ohjyqsC+f99RuoF8XqD8pLo85K4jFZkYUKXKOn50XjrNWjGdTsXr/fH6wEc5qFXjIQX1MJ1KMHNGDdOOxnGYvovke1DvnS2Fq2gYqZLiUnlSHzqeh6+DZj6ZiFlPb0c+zN1TPp3EA8AlTtAIj4Fg3gsFrY/Kt3Ks4+zWU6DNVgXk9TTr9nq9/nzOh/n5mgkHggrqZ10nIoSZgfAtTFGAe4I2TX0sipN39JKw0vlL7xKSt/Nuedw8kHXNY3lhzwqQCYJsQfoQpALp5m6gjVEaaVY1u585JjZ0yOeusof7koWW+mvbkQz9CFDfhoB6HQTijWgq0KmK97OdkgLcCsvvTz2yj2xE4xfAdqjDju0T+kYA6LdCQE15IMqbYZgKgCkbkEfsgY3T0FJ/JGpICgbMmy5g7Zlm4az5WlB7DY7C0FgK8pDSAIqkCj7f/GEdcpZmJIBa8AnviaMI84ZjH+5t0zTkCQOWgmw6OjGWmQqAJFVAev6oiiGoPdQHZdDsYW+I9hBxTbWDiIuGBpwmDELrQQimfgEV21Hlifv6j6ka8GkohPHV9oSIlZekVh1hj9NaiHuc9obyLoZ/m8QQNK/4prpJYYDKsgJwx6uPqBaF9iDA0CyuLxSbCuInRoqvQQl3n+2fVC/biJnGALSXbP8yGQipaKng9s8eTxU+TYb6veExIi+l0Xbqe1vyFE+YHAc8GmoQiyYfzDQfgJ5CjNsCHnoYcsHyzHQA0N00sCL16wM5z1t+uDQUYvwW8NGwSCUc4L5uikIoNfzQANHW47hMnwJuN9QUzo5hzwJyXkVpGHCAXy6H9il8UUU07OvgGT2KWz0asaCl8BPjuIQ8FFTalL4DaDpAHsIO7FAKbVPDic5dfRSLuOWB9l2CsXxaQ54sDbZ6TjHsP06Q00pANL9DbV0HHQcaVB7EMOOC/kTh4niGukj98P2kTaelgDP2r0ktE8t1V5S/wKWDjtvH0opAuKVwDeO6xV2BOiL75zuI/TpeVUg3Fr+v4YXwQinG92w20G/lcQnJUNORlgIIthov481vKkJ6ohTjfCZLSA9zWAFuGSoCBlQAGq3OYPb1Oy7FsF9yoxTjfRZLyI/j9QMwbwhY0yGUqLwMh4vvu5vmY24LQooxVhYyKHXitWFY7kT78sPJuIDUAfCHUo3F5L4GxXgk6oW+S/Hq/5il8iusB6H0OeQdALiOlob5ZawJHE5LGBIAnlBmcTfH064Xgy+WhvBKMUZP16O5y8VYcTi5E6kOx6sSbiUAwoP917n77uq3etVCKhIORsPQeynH4MU5uVW4u+RatdSsn4CnGuCdz77GMV2zKilOesNOThF5HS3265QiPFXF4/C/f+y+OAQGB+4atuAP9y+6wAbK8Wa1KfkVg/XqhxNB+vT1tjvefqo2kk3FeDz7fIpqdh/49SQInfk6yyoqXkVwYgZ83k8LYs8hynMJxpmEDIkQzZR7/eFuOfoH/XS+mEqFPJYL0jnlkJfIDckcUCL5Q74CqDOmiJIACayo3KlIr4BqHwAq+4oo0wqOQOUZoBIA1SpybXNRuQSQozKmq1P9BpAck7RR+aMguScZ0oyozADgVkHGHYA7yhz05zEO4d2KeBYBCMWi2WqvOHKqEggmYpGAD+IKDSF/4xIAPqqIcQ8Ac/aBKqmgBADqnNtq5EayAQDStoGUtPkIkFDzBQDfAe4BeEnAstEG+gCEuQNKhHmIMQAgYwBA2rIA8iQAEgBcpOaTAEDaTho6AWxEmIK19uQ7g30kIn9kAHy5ULnWIfm1nC5Wm8+b7inuDQYBN8RuGl7CkHNoSSi/6UOKvAE4CDYKkDbySMnNBhIgRScFDVoARgRI2HlGABeCbQAWgwAwJ9BwwmICgIcJKPkJsAYAARbhIZQhDlRbBUiAIxsZdAjAp6dfgb326LlExKiMnBkArli8NF62aqVa97nTqA/eFoftWymTTgVgTNMVJEHgUYEZTFkkALZ0BxX4DGQIMC/4UQwU0WzaqwGLNsvWzuQSFsAuAIoIgBuQAMCoDeyjwUWvlDEAvQBGhIYAizZwDGpAqkaqV9ubIgJ2VEBTd4Cg32QfywibE5Ebt8weiIQTyUw+n00nE8l0Pp8OuWBO03YRqQVRXPeCEUFiQ+gmuhVAGwU3RVxhFxAgYbPXAfJM0m3QI5CiC/AxqDqgTPvYJARgqzvYUqobeDXaqiq2CQASGFMHoHIx6+4g9LHgYR2RLQOSaZM7bNN4HUJRVJdBhwiwwazgqMsC3CJUlRwUVwXEQbrBF4UPStoBgEcB6cMT5wDoUU1QpwVzRgAsdD+2Z9UMpNFGdbTRNo3nGtx02NOvu4vte9WeRZaN665q260j/LMR+Z66o+gHzSFlU/Cp6hJ4IXAiIXhVbQlQq7so6ADILKGApoAwO7aLzkU1kCDsTwxjSDgBO/sq2rK2CPfIaXycqhYq2o5AkmrXf/qFkX3lu4cinQxAxIat+owE+7Y8CcwJgD7JQfHECXzsB4BASUAb6QN4NAiQE5MKsKGNNhIgPX4/glzCxRCAJE9A3RmvggoSAL02EgCpIKHeKkgA/ARIAOhwdqQBTg7Yc65/EfpF6QbkJNcXMgI8k/MPkgCGNrtuR+UJIL2wk7ozSbYAUHnWgYRKCXACgLSdSRI22EmA3JP8BPBM+xUgdX6mbCB5RDJpIy8k4wBAckTSo9lQmbQROUJJjjiozNZO2GerSYFC+4dOf8KZJfkJu39LMgAA3h0sRfUFqA2AMK9kFwCeSlCWe6oOjzxnLABoH20rQXKtCCuuFl4CAEBgSHIVA4A+lD7CvSe5CcC+tNEvwhLqOskN7FuS5yrUEZIl6AO2ZAAAelUkDqrDi1HHHnHmnl8wYvug50rwS134L/zrV60xZK0H4jZyAfBA/orHWhiNgNmvieMv1vv6C97xh3s431M/hj9e3/PlTur4O7zfN106Mfwtlxa2rh4SPloHm3OYbAJWUDgghlQAANDkAJ0BKuoBogA+KRCGQqGhCmXjAAwBQlkQLyIIYPx7H68/6oFd/lgDJxtPvC36jO4B/APoAv7vv7umTuH8X+UfYxYg8Z/af2//KT5QK2/bP7F+of7p+5ny47K+lP+v6E3nH7x/2f8P+X3zQ/yP/a9m/6A/6X+O/e36DP1Q/6n9y/0Xtsft37sf3c9Rv7aftN7tv/S/dP3h/17/kewN/S/89/+uxR/er2Ev3U9OL92PhD/sn/P/cH4Ff6J/n//p/yPcA//XqAf+7iKf5t+Gv6lepP9J/rX40/tb6w/jX0H9w/tP7U/3P/x/7f4T/83wxdHf8L/G+ab7l/oP8F+8X+G+Z/8p/zP8X4p/Ez+y/Nn4Bfxz+Yf4z+3fuz/gvid+m7R3SP8d/0v9T7Avrj9B/0394/ej/S+m5/b+gv1w/4v5l/QB/MP6v/uv7p7N/6rwMPtP+V/Y/4Af5f/Xf97/kf3q/zX0tfy//U/zX+i/Z32ufnX+A/6P+Q/0n7U/YL/JP6b/s/7j/nf/n/mf////Pul/7PuU/cL2Kv1k/3P55oXLiff1cazm3tLCrZJMXf0UMmPIlkm9lkBfKhrf1cazm3tLCrZNvPoEv9Thsezm3tLCrZKeNmb5HVGjI2CpyCdhRcTV8uDjtWHJnD4Wf6aZyPkIdHP6EFBB+pQviU+lhVsm3n31PEr1gCqReE8sdVY31/kWx+e/QjCPwbqVovakFyd597YJlmjyUBFBgK5PgabYr/5bpnG2Mt7wkZIOPykkBvrhWs1OEv8q2glG1v3JJ3sWmhEFTeRjKQnZMMNY4vflfj7b9xHn4lfKuJ9/VxrObLYAPFmDR0y8xe3VfWjZs3/+5U+zkoA1cehq4jHFm0qUh0kwzByhEz4HTdou2XG9WMRP5uusms8BGNLSL63KNi6yFdCtz3YPkettsvtxAlEpQmHskUQ6Cfe9PYqPWOZD+rqm+k8SwXhOph4Wby0/tLo+JW7F2Y6RUQGvufFPwUz72lhVsm3nsuSkRjS+nsPu0n/DIB+gls9cqpjfgAt65JiihaNz6YfOuTmnM1Hcthmqrz/6zrWgdGj6eaxpMCEMPTbhY/4klmEyeufL3vSnopAJMzA3R7qW6IIC5HaKQvxoL7rTt4h8Sqyyn51Sd4I7qqvvNz7mx2+kcYKwqL97HMj/qJofheDnML+eLSEOYRsI2pg06L5+uTNvzb3vI2i/DIBP4v0DeU9PGHindSMkS9tIoPLVm7H5O+y2zwanSJcx+IFcYN6SKB6vBFMQkCrUFxAwubZdDq9w10j5Qfa5yYB1FMw+VrWKSUXvJHEDvAvR5Q5Afxey9HoYAVHnO/xYbxVtRikb0ZX/rI4h1qdX9MyuRp/IH1Th9heT6HjLqX3xu8SWU2z5hLtKuw71gKDjVuZexWjbHrJKS+m9qdvBB66DFRsgRCbV6AkPisl5iOGh+wtt7FDslomgBNu+j6vIFpt/4kolzhPka+8f+NKBJEJiYKjcfmTjOyRaesbPbXkK/fpV4LfdThfZI1XNHZccBTELbnCiLAPyuTdPvqIltQgJqffOzcznauEvhPLGTHIdTaOfjcu52QDnR2HAT+0aWHPibUca1XaJfcagXDZBPLTPIt/DAIWxwrDYk/AURUnBW7kUx0+bXXZnIL0EkK/lCzlsGhqlrM2Bxccl1efSCTpQgvE7iMoZdHLYEKaw1C/v4pjEyp60ptuaMR5C7CMUTr3mhLK2T5TwiFoF63XIDsBfngOReKv+h7vxgTSXHHQH4Sxr7WSS27IGXi8DUGlVc/UvjyoIcCOVbqf9y7gfTfSdKz17NYN05X3qnWIASC7gJi0ztx+RHqQ5//UdQ7NZWo+wN7f/19XwR/crRXH9nb9UeO9yJsuSl08dph1S4uh/QgR7xCvkIRBrtFqrZ+amdG/z6wqLCaYzk5KCuRGqbRzBpA194anzOToNe74FLLviLpso3SkzdHTO+gIT+6AcuH4yhBDJ5dGvpZQ7Q49b8qn3aeG2ffk+5Kpl3QvM+VbMbPeqvxRVXI7acACNQ/+8I/5mf4mmp2x6LZYNtOjs2ebIFUNwPzZcsHOTB/3m8ddmgBNBFPUK/ZOdZvta3BZVcHYJRIy6886Lsrfh9Gy1cKVEdWfbUkRrXjAI7Kj5L9Qn/29C0wg17C4Ud3KHWSveKmR/w3IOFhdF3sjuLjDlFprL/UESaH65Xhi5uw/eIXzVMbd2tDkoXUtKb9lbGyglIJsi5DZcURjTiTc+aWRCdIJd3JpoIP1pA9xm4QRkiJMTJ7pAo4TLCGagNfHrMADqejaXoKPaAPg1Vz/XXk/BMbb+D8bO3trTov6pRsItYzVxgWc2xEoyinlpXXhUu2k56ISnNarsOGu3zpAbgV3zgPIklhFj4EiurxnT3N8VmRYTCP59wMhS35IJ9M/k3s4WOGNdPXkxjx3FNqXh8EBI4AD+nmBBTdeRVqMDvylAH3YAAADXrVVdNDAPm1s+SehQXsPW9cj7WuBR2WnsxRpXEZBoC9KB+CXLOOgHmEXnZ/o+DcnwFRXEHPsqdd4ZjEHy3iMVWuE0F/BoY3wI6hwMzYFXYy96pFBy42qy1DYa4QWGMvlh78H9oNGlSjnTrIDg7mn3jn+L23rTfhgfSerxSxSzYNgegBIx8h9Kv2550rcOmeq4RiZOhtMDQyfmHK+GgyjxRqsZOqTluJFSF+D5TlbwLb4GpfNjdF1TUoEKbeP7ovKE6Mj72MgBjQwYN4zbmGHZaiKZ34j+gfqH1hVs8wSF/W0EJAAAAvUBgblmNE6gvgQUeGV0L68LfkOtUnAAAAV0bqDjFjwweJIhMq0inkxT2tKl8ADwUpw7YQqHpfNs2untOKaeCQ6uX8dBbCBP0Ta+hD888+S7lVdf1RAvRnjFZ7zpj/rj5W5QFohtrXfcM1cnE8PEOTZQ/d5Doi243d4IPlz/0kiTH7REL5oNHZ5GVfu7BqBtAp2gD5MoHmm0SZcVaCymK78ZPXg3CCLcgJaiPM66gWBOqBI7P8QZJjUxJVcNfW7INBP0LLKyrgy+3qbsdcHHsyRWzO0AzRV7aDB++IRBHAbg3KcjbpPWjQdlbKTcmUBkaJgaHfX5GfDgy4SMeZpLR79MqRNO6CMFwvomuPnma4bphhMLm3Ig/xnkC40N9LghAttoS9TEqUPgRJcAGCNPo2uhRm0bibC09Zgbx2bxVKpIRezFzRFTyUCDoNvIfbUkslFCJXgSUVDEUuk1UKTynfjW/1lSz33pyKL5vyMSlvvDxsSCMNuMETV56LBaM/EjlUddLDqIJudCch9JfTjpZfrn045D6218zcU6l0Tp9j9eHprl5iKetEqtPjvXO7Xm5c+MWxusIT6eoleA05SKvz+WT2PajfYqR490MvNuRQ3nsXzJ6rRVoKXxwUEQZkMmEGI9HvrEyKyZthn65ZWNQhRrMWgDu8nWOqnuLUNc9NztDuwIhgBWekOAIqiI2Gd0Q/+9QZkXS93Zy2ckXFgFZtaiRIcAh+OUx+MEcopkpyFa2CN5fxawBfRkxPFPC2Ms30ECzbcFcwC/w33HxChRd4jHMl1YA+sVn/xRirdCEQabq0GC3ukuSz7XBmVsRiXSKsxnT6kDo1RRc4hVWUVgAAALnieIZsGKGPP9RWO+0Jsqv8nzd+TkPDzLlvLeyzMxj9JOYvYb1KD9jEDeNpPg9wuz6rWvhZ24rycwtiQP5Sk6nzqsILj8Lyc9seB4OG7rjOY7jNrsOsFqaEXZ46pxuidp0fSNrw5v6hFLlAvcrBWYDFhygm07Qf1OIDTtPQaB884GvbOX7IGxgdfMWZ2UHihUP1lTDfoVsM2nPyHZyF88ekiXGFyHp+GlWnqXAYNhEkWWy88p9MR043kQgpu63zkv6JiFgdbY2C4UuddWf+/+TLpT9MAWfBiRTzI7VFZSnmu+q+FtVgGXt0iVyv0jeysZJU2jn2ox6BzRO25MfGEtMBBZr1+4TEqDOsNXaYh5c2o7O8XU9NTvvr9XFHh7Cb/m8+yJ8ZOs39WnzpJ03kOYieTXJ2ozVglalLtz85WOy54V4JHVRbORuXpaFfh0m258UjNKU3sB5x76mB3dngiFR+34Ns5XySfI8n/L2FZCPN5lkejKJy3rWFMKYTnu8XehQfAkLRSR2z+vts4/9zgLzD8zc5xK3/VQbPhTEvQiBGba9fgOso5L6vZHcPMjGPP6d2s/d6wodfQeBmK8CYyrt2j6E6TH9Sz6maMnu+CDfDwRo6AZZrn4NQcKWR/kaYd2ej9Ab9zDrZ4oK1Eg89tYkLJxCpTEs9fw869TjI9GmmvWMa8+aUrkTJu0FULzew8t67EaQhWflqq98NDie/oIogg9tghep+OtWpyACG+wyu4gN3YGQiFxL5YymFvl+0C026CpTY7YiDuF2mc2oS3xOF4eUs7Xvsq/Nw4JQbGoJm6Br71UpKVVCLMv9CEm09i0tUyeFgBmqzGRExVRp0SByR4EQPWJWCN23o3JSOsaJK5vSKj7IZV7tQyRThbzaTdw4LfZ2CIVEKuwhHlHZWZiG8H+08MutmT1XG9QZLnwJ32Y+hZ+OTBU6JxWrL+kNlOxATVp+G2fbXgGqM5ryin/itjk9oInkmBKhBGbh3eSswH33+cojlDjajiIdmWr9pQPH8UgChAgVfyqiaCwOBYEmp70/Yq8bPF//Wk/FxFMVtsv59od3ANgtM9PjMFQKd1tYS3UABOnpDP4ftrtIyN8QBIgJeAGxt3wCYX6Q2F39sa6cey7URLGUTtpV04rk/7rWqxvi/MkWrrTj4OVbvbVrJmVerD85FXqqWNvbznDB0skt7mpshEHnI12EwP5Pln8NGqNyVE7/pBhXJ4tQ0+D11KWppVWp93dC/ZYC/1MLighDcHoKra3B9LKrhIA96qQ3MiRrEKnl1qe88nWoIuUKZr1cUGzD8Y4XXYBsXWch7neFEoIsjTzMyf+MGZrqzjAO8/Gp0XRdh4jrk6wiUQ49hrpJHc1I5TxM0xBrahSNbyUmsX2ytJn98N+Bp+dw9M2z2WazTEGLEAB/AgHq9L4lg7vu9Yur/+PGEJgYqmPYTCXRbF+xbya3xySYFRhZwxTZOvlsDYd/40nYYMeiqOyTWORosKRnVJF4+uImSg2krzh1OBgBby4cmHJRlOYTqJOr2UsMHKEtspRDWidjDHObILceL6y4m+ijGDmohcCK2k03WzHeKt3SU3SnV0KDwTdgHd83hEbB3PFOqmo/XyfXIgc+mU38twpDvLwqsboSxb6qcKZBNy7itU0UGSVE+QfYDk265xfgQSchH7LbhVSGz/QRZjSeGNrCxnN9SGAeXfVsDnnhwmyvbzOOvTFKSyEDp6vHUKjiSrLNle3hXAPo3EbiS+HFDUJigvujGO/vB1JJFYZZjyv1ieGH8ax9tHeMMyS6/MqijSYqzPWiAifBCZV7h173MOG28dLOQMSh74uGSI0XGWjKXg+anDwiY+m6zUDwzKwNjr2wq1EEgTfNIg7xxXPdsBbffV3YOYBudXIVPuEaIUBdasg4QgArPhjF6aICtLFYLFASCd4GBJra+kzwoJlbz2NOkkO8KJNzAgWHbM7DUdoi6RdA2a8JzkPuJGI6fiXiceKDxDAY/psG8JszW1he/EtIUG3T/pEJOFYVhKWmiFG3Gb3dw5uHUuXNLXG3k20keluSOHHpptIJip95bZnq3u8EjFfsq/uoNA4CoC+OSOvztknwknKJlkYeyjNFxhx92hLjC6iaSJNCZXqefy530cyrIufO0K4X+rQ04x/Ay6bKANCs7HcqRrjB7Lx+WNCX3wKcp9xSLxtL7wWq/220pnR71Ch6VLHU758/PykNguAdtuidtcVE7TSx1oBvi1onYxf7GzE5uoGZgn4oTcH4tkSPPq472wdaYOjFl+IQ1RubIS6jaShuN7P6FTYpKAdUZO0LzNyDZDf4+A1q8zfTe3+esoQ8ht6eZGpYosFJQru92f8MzSblpw5HftO5YvLLe8J56SM9NOByjC+qrnV59X4t9uCdWEeVWASCNVavo88ZbbBiNcE/j0zhoVvxcSvBzGjQzIbzNTJN18USieSggCz7kpw9w7sfNcAOwZZPDqOuAsIYTNRp0jgbFkX3Hu3e7DB7SQRAE8QvdntNBf7UkKgXVVPAO5f+846E27K/8tt7wS/Rs+JMZeWM9ZkCQPvtwaPeKpDtwwS8Mkt4TH321jB0mVxniEQ9WxGSJEnzWHGhK1DQw0ueaYR5HUNcuzHMROYbN9rRRFxzOC9bAA5EDSmyMnzOehTmxq7iOZfYZLnQr9D5k3DTBsjoujI9NxsK1BBxkqkN4DHwZweimkm90LCN8sqiY1uI337m0IoS6CwOa8HOgfrqDnEbuN6UUmQ0LuystCXVbQn1Jctqz+38oYUmcoGaBBT4H09ZFdgS9X/pBJypnorz5pe2oE1ucrmET7t+ib0SrsJwFQimg9IajxBUqY5oOWd3ez2gpnNW+VFeGOrhyqYFj2aM1w12mo+H/IUP0FKaW0tivPJax3GORSv5UFwjNVZZOy9gdxBQSoEsfT75BSymoSex1KVVEenLQukaaJH+YX+fpsLQUTLQUM/GMPyLV4iHADGS8YB3bN+3P6b48ZTTf3VX6yWWx1bBa6Mh7+2oszF8SneYP9oH8iwdvzdxOLKcwU0afpfwsanLm4y+yGfFUA0jMWPs3sAeK2XWKLvF4wc/KEpdmW8/e/DZbOl4aQy4mpemy0GGWImrZZ8boY/a7lGy4iVQLvoG582f0nKk2LPbThIqaooSsiPdfKN85tu0xBso8w1r1K7FDVzxmQZPH6c+lZIzJTaIlTUrMXQ0SQrD5RKfhUNnVTQJk2YRQGKoIZVYHxODWAaZluMcdoYp88M8bsFQVt/Ai9/eP2QcIfF+o9k2b1h7xKTJ/WuqZdpt+x3+lv9Q5ALgPLpCm861zWvBUq7J0sqWZ/EtC6v90eJbZxo+EIowk0xjj+KJ+mIHEbAhnc8rCzxA/SZppmBlyT98Kc/CIZkBhuKUYJP3CdIDzSVyAj5nWtnG9N+IpKa7fYL6R1juyaaeJ5CyhdEDkds7NgOjO9nGGCyrFimWJIY1rWT9T4GRjrC3X7zz8H8GqE5JHYqeTfyiEKWC0xyDBsp86SWOKq2b1DeSQ/r9khEQL7waF2g89Ry3YVE0aypKLYbVXYK52QQMvl9NceJMFLAFoWe3PbURGKifaPZo0Vbon1U2g7pxexV9dNoPJBj2O6gk+ucKskjfVwmUyJxchxJi1agcM+NWzZt3KC457pLQOQg74PcyZl+L+cXI8OyAn5kuaKXCV7NSl8vi1wTs+70gawrTc2O6lWBH86oIdqsM8Di4CsHVKgd+tfix9JRu9RTElDbhjkjXj2cwAZ6pvJoh11F6AZ4brDVgcw+w6BAH/O/Lg0R9FNmQbbQvTlQPf6bpClGtdHC/GgpwSxjFTiYPXXTEOG5/A+Zvls96T2dxMRFiPjFltIulqsPmLykUWtNpDpjvS2aQkHRXXoQ0ggIyBYrlRgZbfnaEc87nkxzAFN8CrpS1hRjNSS+I8h+uNaRpB3HpXifWXJ0ZY0TC2aiyx+Nf9yEmLE4N+2GmEvc7bfpgyQWf1cwnCTmrMmAlr9FpntfCYt+8YEq4dX65ROFnu5rE1djL1C0s1VCaMWBw3XPuCLYwVJPNSOBgbE5+5k1s+gx9YqiO8/4L/60pA38o7mhPmh1w20xAek58YUekJI38b+uC24bGwn4dYnCRUigvGUUTFlcoD0rwuPH4DuzTgSQ4yMArArjlr5aBYmT9mK6GdNF+9GF8FdZg1KaEkokPOt6rJwRanFz4PdPq+yZm7Q8qsUvVXXW58nR+GxcCSjpamX9t1LPliY8rJHm+6vUI/9gAAAABrfCgpNna2dwsMh8vP0r5Bar+1gsJyd4ODZVjhlq4MIfya+yFbVLKr5GSlZtJmlhZvmlQRppcssTrBkUHmDLCaC8jBlNW8EvRVZLLs9wizsxTM2oTyhkHEi8aOqDsyifyh58rzOFG/agxUBjez979nI00eUY0Is7rtU1RHZBBwDMFpmSpFM176ZTKb/N0WkJOd5snKePfEdUxYyyhHpd/1dRWfnWAnQknPjwfCxySZvl182KChswaSt3CzD24XRFsR32oh6jexYA0PZe0jptH9wOEyz1gY/SVhW7biFnUJHtlBe8n8MSljYee29tQ3Sd1PYUPTVUba+x9ilPJPFptjh8eLK75BaHJAwT1j+7ICSDWQbwRXxswELyt/BozklhIiaRZAumqdQc3OaB8JAslSCCeX5D15zNFDPyYW+Q23mo153hx8zPOtkkeYIQYppCJPbaOdaNAV0ri91rZo8O/eTI5JO+WzOpgKN60uPFROD8xBhsCeSLgSq4khEC11FA49v99mZC8Qmvqf6uUfmsxm/MQAjOJQHeY0q86S0dg/dInTz8bC6jDZxvLNMQUSVhLrxSU7GiYE6doimz34GNTot5RadCt2lK+m560IuYF8WfJlr20R3uKjbiR3mmJIbBJO7deOttKQaJ3x+BlFvQirfKvogsjZ/pMjaaT3/ZfGRdqHdff2dBtut4V5iqiscUUYn/t5ngqt/noaypIAe2k0v5DXFkqz6inHFAmwPfi2O/CNnWWKJmloQAUrqfb3Rg+uczBvSmBJIytXFyGCWsRrAYCVIvDEv3jDisACAYaQxLz/hhrBMON/ghGlFkiYJwztqArEmbjCuSFBNfhcefR/0lB0IAgDXhTkxHS1F/G1sd5uvD+0Za3UMgOK68MK5EjZAtlBRqP/13wgsG7uu2qHc51oOQy5enwmKu6jpQfzOMBZAyx/6WzcyceJqzE8K9N0vZvIAgzGZKnXpCMR42T/iC5JF9O0ABwCcB7R5Pm9Ik0A71BmsJ2WkdG37dgwOD7wITq3zUEijqr4Irp8lRTdI4O1+/9iiT3WWBeenkvr6C/7WyJoMzmiHLbcU4jmw/eRe/5BDW+OIqNdq4FHwRZVdiEKUUpkZ8szzR/eQvnNbbIZGFAUaADndLOo4ZOSzFg3fBUsYeGzzqbna24hMFSU6w2lEA4K7Tu+tX3c/ZUWsKflUSWkZHopNV87D9Nawh9ote79rXwHzvqHh3keTeXb6T5/Lf73jzexZ4hupzBAia4OEEAtGETolfj4gxfmUlGFl3UlD9KT6278Qc6+cWul+qY8+OYEKe/X4bWUIoJzU6lVC7WvsYUUY/llFDE3lWCb0Nmy5eAdJx80KQe22icm53f9GaFvcMXFDSb14QVv40CxYFPSX0nKvA+ougkQ63Xb+CL8pHsI37nO+1I760h4em2qnHKEx4Zjo28wsJZ6bdkfdCI38ZmTLE3dUkc9YFKktAggMYy2PAzWQWQx4Xb8iHG9ihqozpyQooK48kEjdPalEbTdy4ULxW75JLnxtN6O9KtZ8fQzgN+hu3n5DvEPjU6+JPY6hzhfd1YvJyFlG3aSnZ1Zk4nB07KPMC/8udvXus6PIV6VmWaLEhDk+EXRrTw5GQu8Kus/Y+nm6HjZ1asP2a3ScDDqBZM4j/LdfkHfzvULCsF/wyeXi/Vx73ekgm1rl9977O37Ts6LpYzwBSk81lkHcHRdNbJRZHzbW7uvyzzkvfpgjvoa+iTTkSS15OQJxBNEYQezGQO7Fajq6ReXqwgAEL6nBv9IwcWKs3TYgLQP6D8EVxLeN3VnXiGpN73qFjsYqT79XmVcfrsbF+wcAlxpepwwbUJjler6hkiZZ9dJK2NxPnYpTM8C6Lp75N55jXnxIzCuQm3RkRAhuYxwpI3SYqJVWIdApt4PosQeQahIdzblHjaQIabAWdnfKcKNBdBqDTp152P6lRhJQudH4fj9aWRo2TwZwd/a2dq5TXLW3jlf7uvqvE6Vb0uyqF13w6R9YhHvYlcp4mPv+G1k/94YfuM9GooYJUSx0uDF7YALjCkVYJedxblniqYxM+dYZ/xzZYRCMKUHY11TXgpx9lCdJ9XVj4BwfFQ1t5a1lu0B1vj6QHAXevtpVAPz2w9i+Mrw54WEzsLDUJcHkxhdzyOAg7q1V+eGOug+ySDGEw7m2O2b41VKzB1CsQdQw19HJcd7lHA8+H4SdR2ami0S6XyF0mfLFaF8eQtV7fzDCgiTm/iwxKXGzkwq4QupZuUg9M4iEET/8GiFDJ99OfodeQgncsBEJnIVBrKL2UOHiaxPO6kTOZ2fnEQ4kIcehA1QLSKeVOZuPJx9mckJYOLON15cXTlYWWuueMRi1hr9ZdiFoZB5yD8MJ+YEjz9dyL899ErF5JH2/EQFJANV4z1jW3RwnQXqr4j5sRri4bwWs+hITVgTZ5QBPUmqbxQ0Na4cBPDrc7zM9rq1Dx5xpAn6AepilSbrhyVn3+MnrToCzxSiruOjrrh7qr/vl18ymlyNf8ShL477adXw1fKzW2qj5/G0k2UFhNhQmK1xY3iFcYeKgI8PdaOrdV0D1zbMinmM4Dgun4HWQtDnbv+loiuidSgJLv8ERlxKwLb8sS6gob2D+9iQMJpHyzvQlbaGOr5VLS97qJ8CLFbyXbY5sfFcp6rH0NjrmRKYVlaItG2l1ilrzNuZRSRV3WtvFVoJ3ytW7m/65g7eRrO/TOyIjmNJ4w95tKGMIY2Rj4Mu5ndvGo5v0i4d/xzqWEyh8zMA6C9QjDZjrVs3FQOwiFaXMczZme1t/+s2V6pT3o6C8MTs5yiJHlmOdWq1VMQ41MFupHmKjztDKNJtcfTikd/Uvwot1TfYB072rVzWWe6LyfcSjqFdTbEryW2w5NCpy1LPLhnT7ZMR8gDOM49kSTcWtJw5dd5UIwLZUtAbC7gaaGFuT5NiIo7MtulslauwXUeBBxo5R8cdeAVTG+dyCh+86DpwNAYjPb+TuA2av3IyC/NR6JuTOkdVXbhv5IS+meu0Ojm1lJG58A2FYIg72Dojj7ONocvABacYtx5qeZYx6HKenrFa5BOKd3l4K+4P1TfHbMG1ohLsl5ezNDP+2AqMav+QsJcvwNlvseDffX3cexpkCLF3Z2pZGnWEhPs+cMZoz4o/jvFQ/cHVFEyy9EwAQYTQlFP6VExG0IwvxiXJ6VxtGFCEJ+5OL72+C5eX0a8QpoRsQh/9P4kQlgXMgoRFcNuTmqL7c4uucyVOZqYLudaMHNu2HHWrkFxrVSaC2lxp+kq9OPEA7IpmirQ2lieEiz+QQWVQEa5geMExNeMnIFEsGi4rQ4balH8QycjR1hftDfASapkitq6bBLLr5Q+K1jz3JL4DRDRLVTVTfJZH/r4QLSAd95lwBjuXA8cgQBne/E5HaM1dTFilAAXbRcC0AsxctOg188o3mHSMz8SttXHub337lPE3y/PITMNJyeB4WKLYDbeFR21r1eq4M9LhXxh/IsUk0t0Xb1lrhnd6OqD+jOBAqQS+a0j5yZ2LGlNPdjiqC/8mP/a+ZIter6zVNt7+M/qYugxokqJBKv41b/XsqQiaxIYtpMNFRa8EiVYlYE5s9vG8xWwR3Jw2DD00TBdn4OtZ9f9F3vtPgjgQ6NjOINfYglTyF73IT2nXAF1D7YxnEYJTyaqJutJ7TnhaVHMSj5yY/shsZzdXV2YW4ZtEo9BpwL/frTPJJoRtivQycl9P2pHh6IwhhEZ/5QytyK2RmA6W4rKOEY6QfThnYE+mSgp2aliTCP7cQop06dBGj+uiqw0fEqxXg4xARYMRR6539VkZ/GCLHfSf5N57pY7/hgBqgTBKB7PBoj4gOJR9uMT9K4RN9mKK47Cr65YlCP4LQcv7MsnJBYlVvyOdOECs726ROU+/nDN5fNqeAoddZT7byPWmMXekQYE/ClerSWa+F8bcinNFkV5dHGr59h6GEMFi77G7UG2nQv/9rYoXxxX1T1KNfVONxXN5/EEk/efzSK3ks8uSTtobsKiKPFsHW9lszlYbRAdmIiVly9/vL2a4Fsr0xnrWcLnJ1xoisLQs3UeYihXOVAGOCfNxF6hn8NXe7DqME7lIXUCRL2iWFiMH2e/IzDvY+3QCXiv5J+bDFTB6gZGaR4QL1UmmHKTWlUQXwJ6kFp7oLR8RD57d5BA5AbwJFBIoibjXLJ7zWRfD8NfSrw9nEYW+NbwzD40gEKxdyOn5UpJAf3SWJKwEugBcR6Iz1ddqYS9BJNMVWqiPxJSI8MtXPmdlZmfhsVx+d53itcwWbYEHGhlIuRStHoAtt6znQQsyPJtlq59K42AJGHhTa2COWCaDRTyq+t5J8FDrW3R3JVKWC74ynT8/5ssEP3+IejbPAGadXdtVtXNlGJlI6GxVIU5RlkRCxlF1k8BmH76965H5QEmr0ET2oQfjCPeR/2vydD25o26OPxCFjP+jVf8BqQ5NXxVCXCUde2/Zqms2L4iS5TLU3ZEfAJARyyZ8J300DF/PRPQHTNLIvQsJBQq+ooDhlGNkALI+tpAxxClK8J0t+ukfq0ctlTffxZiB1ZUXS7Z+ueb/RJIIxs741qjExC4c2ZxQ3v8HolHXyqeLTfhn32OHq/as0amv89sb8we6i2wtJ26mXRowj/v8ULhdUCe/8J/is9DTbqoRngsRuu7rrOF7QJDemJAaPkTM5WJDuLoLSvtFJ4r477MmAyjIBtPALtyP43naf87mHpN35/R99qQC+eNUtZkCCR21Wqc9BnQBjCeGZAWx4XxT/meVOtajc/n+h7pVZEacE4fEtT9zxgY4rvKm4VHWIOeDaowhAu5s+SJGGlSqFD7W8Xt7jP/xIPzRoVChi0i26vVt9NusZ1Dq3YyexYW1aTu7zg5FD3sxwfxMTJ6SasSrHcw6Ngx8q7MQXdQSViuCnJbrhXh36LWT0PeH+1fkVly87oiysYxeLIgw27YJECOqyyJtak9I3RndTTiGAqSxdEZgrh3c4ej59pqWULqEdHJUyg5KWDklz7VVWhZ03VP7uQKGaY5rF84txru6S8erjjX1VPF956CipTfW5OPfUBvrLJU1urP4UoMUA6vmnPwfIiJhSAZuXb0J2Ay0Zs/aFDR+xU3mqvkF3aFHzYSEiBJSUz/WxHoCFgkz17H29/r6jOdj6Y5nTtGZY0uaA673pr0pcz4ElIL0xa4F2BE8mmU7BWeJ0UTGLKAlglc9/2+n/RZZxi0BKFQFzwZMnxWvz9hGYXMyB65+gZbpq+Jvp3L+Bpcu2thR+nbCH46wH2Vrs8s2RXJ4155mCSIn8GVSFipdUkm3hKw8dlbKY1ZRce/0rG++nl/yepqncXGvrzm+7Tr7P6UPqbfbD4VieD1pmxFRw53tuqwtuLmIlEE1G3/2wcqDiq3eZ5hmUa6+pjwu9qp8RXPn3fpcrLoF7sDlKoTkhfdYSma+nGC1Kr+fyN6gZLgzY09CGvny/MijFMUmNTvguO5DaMnsOEeTAwCYiqXaJrs5+CHdgn/xnjWkEC1x04kMzg1a0QDacNoarRzRJkFQ45ycnB27XtOiBnRmr7it32I8tsWY2bNeXnCE2Wc03QtDpOeqz5QXlLb8hkenqp7n+UoY3rsexAAbTgZgXD4YJIvFRFZ2fImFrtIeQVytToy5h6y9rySE65kxU0OreJZn2SVLGvTC2O5qf2ntjqPp8ZBHh1P6HpH1VxVtsOsK/G83/8vlqArCRE7mt0Hd0mejcCGNBZwM0nkMh83lSsjcCBn5WmEv4oeKfckmHiDboF6byP1C7ocaxhlo6LUa8nhwKCk1sh4W5h4LJuhZmJFzzb5+GhadMVleUTVAMlVKxFrBmBfyTGGPlrYVRT0tf6ehzaxCU0QCBbY8kPaXdjVGqsSJxaNO7PMgnFXIGpDOkOamO9uS0g61d9CuBLALi48SXyj3v9mg32/FQrWzz3NKT8dyCnItRqlRKL+A4RclJ96yU0bZQQ89Sb+GSpEXfh5V1TXEHfyie9IkJdmQgCbGskO7gcsQL0MDrPtiFtz3ZQ9Ycb1NEeXWBBYNJV9uAD7XxqpsMBF/6lHdGEIWCO2MLo5qXO7JS/RX5q+q+6EdrXvNx6sLXFQRTpmRBUrOLlb5/GcpCQRC4rjNPJKB8phGxxpg0nORgr0IEOC0MvdcG4kXQitScE0TiEuhGzxozXV71i25/V0KqAN1yCn0bCl9Cawwr0tzo1KB18W6GZpAz6ZByXuYxK7YhrU8ELPjjFY3fTXrXxbY2BZTnrDLzY1VDWHFLLa+Omw0uII5m57BKXUJU8loJpRUdmnRRkkLFdix2OXnw+pp1IZjCpvN+rdlr1+JZTNOPxebcgdaqfrnJFK/OZrvHF11fneqLpOY9BHjp8I3xt4dAeseCuU73q3cmqtFTMtzV0npcWtXDnMoIjd0bzu+FG8CghsxodqU53HRfp7P4DgF7bpWZmn47sqZ/CIniuckLyZOKQJtMzF9+h/vd21n36ZW1haNZXMfPjooOh7tvC1UEo1TL63GEZRG1VFsCBsdIvxitMPGzvQ1d8hqISSX0PPMeQ3NpYAOKSV/d9ljHYBFCA+Y1YoBzWW86Ce1yqW5FOSHB/il/5ktadIids8JBv5VYyUT87ivJrdX1BJeHGJxFeIZk2jX/iwdaEHZ7/hqDbUdOYMyour9FQmBLQFpQ+op7UTliBV4xykCdJngLO9U9ayGhTHpJQwVQjujUt9yUsK9rVTNkV+CbqXIUJ7NNfiHXgAEJ/PuZE2JoIFLifzhnfznU59VA29MJQQKLMzaJhanp0u60a66j7s1dXd9g4e90GmtFK63QFcq6D1nlatWxBbpdu3WSb5WANHA31fOvx27DPkGtyqTJ2/g4flS75AaV5EkbqB5qLkA5OStKwSKF1HNFaK8zR/PJWCtBIPsquK78Navyfw+AHL9mx5avMur92xTyQjij66QA7qP31HJyPeM5RIkHZjjRRWJplWeZ5ofF7Q3l7VLuoo8aZVmI3q74yZVezF7rAN9kiPc7WibwmKk/7Z8oQsOKKWppb4S+GILQTR095h5xmqsmBUNZFhODU+netvk0qtTqef/RM6xh+SD0uXsnUiAHOHNYTbB9c1y42FcJe6o9W5rv9STTUPWC9+5GknEF0qDvCsnOfMsBJi4F18fV+EzQa0qDA98gTRBjNAo6+eaBuGSbGae3UwdqP58JFzJtmlqUVCs9HN+xQewck+c7/XZ0tkfr3nZqIKAcrwPfO72im7sLoJKHtDQvV7f1YlUmO/peYlGdLuM3ZXzsPoqbULyqLNc6n2dQHBMDd6A0xP31bDZ5Ff0B9GPzEbgUe1oN41szh5oQvGAJB6AAAAFJYBH+ZjCmUtG5NIprNOzhuV9y8D2qCPpBC3h9fuPWMWL/9aR4fQ1lTbItlTntXdgbKxS7JzqJ3sHznux8/hYAjfgIPxokecmgkHS2LWZzn4EdcMIsaec6eXpkZ7V1z9UZev/Px8PVgQGIuMhaukRaFJkaMH+h9wwAaiYj26lIdBm0oNvjiPKO99jehpkVqmDdhcu2TOz7Zz58+cNzsS9ZA/MY1Cd94d30YDCv21w0nTpvaXq1csEeYTP7xhYDM/b/VN9Vg/raDcHDvVbj0zywBCA0UfyajG+tXbkPUvfaLs0JtlgAAvbOik/irjw+RtKSMsHCzGyo1yRC2ayvE6RA0zHCvUSNRZmds9bom+PkUjaKKduzajPYarR2jypVhQgZBDst7GlmNHMVC3PKFmXC/hGYspxh35jcNG9ADSMuKlwoBLBW5pgd9byiBniSSeCsE+cfhmaFqyzVqv0RG/vGWJStUk2M7xbSupmT2K3YeNCNz1Z8eu7Pw6i16cr5C60WpGtGpoIJv5wN6dxqlHSbVujSo+6r6y8zOnW8DLYKmj3N0SyTLT9nChcDSu+Xr8UW26jLJqHtMPzD6ntRFtXIXTJUhE8tBWMsvcxyf0WERkLnMZWe2tmo4CKTnm+WUJQeEZZmYMEilMvxD3UkiENMe4AkCR/sTzq2hxCqaoSodtZFYryD8UvDkpTWhn1mJ2aX2H0O5k6c2ziSWCC6juKztMzaOqtWsSO9E1VrQBX5JW7kgAShJSWr2lrihe0NboGuOZ4l1pcOjnETBHGZSnyE8SZg5JkcLRDLVvGrWOuZbW4OB6MTx86LtcY5dAlMpObDAJTvg737VnuYbov/bS9guTUr5ZCnFgCeALdEagdsnRBtIsHHb8NidbLagjLiy8P582MkLajchnPqw+6QHhi0OLC395HR7DaLO+naW1Ex3vzAAokL28i/Ybe7BEsXjEFNHh+y4b3WyytYlZ4hA6edV7ooaXxPlTHeXx+5B6MJfJyPWnRqvFB440ca2XWw6mNnAD+5A30kyK72846249+8ckR2Xyv0cLWITxH7hnZ/ywBbkhAipX4vYrvzSedEVOm8Bxk/1iKhxIKVM2zxxgSEWyglozUXJkweOv7I+4gQT9ADDp0iqIMIWgIJ/JS5dCn9JdYg4eLpqo0jhEXJ0fbbb7epZfWOjBXN5bil9sngsfOM2vsWoJsuKzEHPCjor361NjmrfMt9pbjurhbGTrGEURvTSm4ZQ+QNI5ZzLwM31/ejPKZ51AO/GEAOnEph931h5hUlms67MPl31Qwgdv0Qc1cV0xG5ERPbrLtD00YoAHW7Xe5wkF4YAQgeTiX050s0+IQ/QLPWLseCtO+xbrKqqIM74TyUbn1hTNEpc4bQfUOHVFwfmxGH/oy61WMRyEnqX/5KF/zX4yqmhbFhQVrVv7hVGKtYlsa9WbtgB9VRNXhXKMBdshPpZgEOYYGOaANxA0iY7fYOy5wieyQgq5mE9z/eJ6kmyUR/cCBJO12K1GaN5emNQc7OMzes1DJXuMJjL0vxPZz4QsZxOci3T2+DyPIlHjKiLchfMqDpMeDoh7OPUJTD6KeGDVTK0GirxMGlqEYfuXOOjE8uEakYH5t/W7Y5kuLVKox19I0Ja7Iz3NgrV6atpryh35oF8OeOmj26iyJPNUmSi+MFbdiMB7AoL1zxad2C1aHCFRZntAoDqwtQlEe/3V4RDvItozHoVlfbQ0rQhRSjvU/rKFedz9IUT7gL1nckfWJbt/CT/jJ67Iwk9IkeVYwgWOTrArOUzTsFs2M6cWwsUXrRyyJ1fK9+6Zu98vl6TlktHhG8bi+3iovACCtMemdNjQXooMZYhcMQbXfDaTyi8dVHxnzH0nbOuwrltrY5WycfKMeOjJKGFYqR7zL4Aen1i7jD8KYofPrt9bWWJS/g6p85aaISYNGCC+UTKk9UQIPdu9zcR0vpR8lrhThNmlCSv+7VvVxdRVCRePo754a3e/MxC3//u4s83G6bSPxE9GM4krbVxIntnMNmGxKwoC7/wU1IU+yyrHM4vInklkiFEhyL/iOJy/JRkIItRrUJaSnhlv/l4byOLivJwudnkEt940mIKcSbfIecGcHCdBGFh8ej5gR/0P7keDYlhh47taIqEgMQfXsHsVR5Dj2FdyR1ja7MM9POOVt2E/h+SzFUY0f/3zIqwHM2eXZYoJsHLVWF2ZOhyvyKq4nUZafGPq/lC4TasftNoK/ithkNGIjGPUR686qkxX2OdYn5fbYb+K83DXd27jZy3bS1Pnga43/RmQ4gXg/EfRu0XP4ZINw7MfeBSlh0TeVeqTxQUYFX83QxOpDpGUQ16tM7mjzcZS0GfdMB2EP373FknFcUG6009wXLOhiZogR6h94daIkhq7qgbmACHMf63mwkaRkf0Id050Isx0v6q6249Y1gkijF06/jt0+P4Sf0swsTDxDbCzh4IVpx0V0srux62y1f9pO9goTs5MTdpEDX/kE3TUWHeXNOMLEmYn4supJxHu6FuzcHKeTvgxmGRiCf36Oe/08xgQOMq8vzIbOZJNkgPKSko3kLP/ZINVKLfGNOWyQHmHYNIZklYIAvjsEZBNyuMGMo72z5BL3NO1PJ+3/z1YqxF96g5bBCjvg5yJRHg6FNfBx8s3E5lcIx/BjVVZD/PuDnq0UmrZ4/pVcM6ChZSgXlDQdMTcLANG4tmF1Hs/7vm2xeto70und2a9IySfkOC6D7AJ6r1QYb1CjmkcfeJB4O+3kFpsuFbLjyau0TALGebjzMHWSyYhFTt1K/S5FQNGrcJJjtJdU1yV32iROOYyvAXhyjAMu9FVU2U1hrvk/K5XxGhOB33Zc42flYUG78NCJ1+/rEYU0G1OHof9J3bwiC3hNEMy821lvvtx6yXrfcGtuwEHhwT/67ToOBqNCc6ITlxCJBjSRBjYA9hgxPIqWjBjToWU4hvsKdCCkvfmFOmjRLmwf+99WxJ5f5aEjHxXbhboU+8xn9DObLdkk9xINkUjBn6YIwBHBvLvg+Nod7ohWvLIu89Lcb4m9/cfkD//0Hcc1sEwCR60GaPdFzzuafrN1D+Go83rt4yUkATUKxpxkQGD6EAJONaZ1AfY1bLoOZBTjSQ525Bs3Mp5pcqcT9YteCAyzs7dDoBaHBUSK0bFG5am/hcysdvoP9wBoyGgKQvKV4ffBOQo3cMw4MOBCv7taAHSUfHa2t1zLx8ZsFh6g2Vf6Ktm7Vc/6FnhLBXF48+UMArWtu4NlWcpBlgepMQ5qFOIa5+8ObAKM78Opc+StUy47rJaoXTfIPj4HOxm7QVlPaOykDOEV+WfOOTHcTXMavXiSZo4wuvjBumVmaPkASGawCQHYx266s1HCs0gEv7fwAl0NpYE1VFXndGTVKgzEH7esBnXdKTj4QLJoeQ1n+KjgvUWAMHyx12bzRLyW05GLyeL6qRz1zSIVMfEkfjgqnI0tr8Nl0/gJRAbdKywmAxgWyc6w7YyXX5MnSJMbXpYD+QZTTGCwVsPC4b1cs4XxGxieisAaqs8C7QsFsIuXCQjx8i+aqXDvowJu3yaYFAo9Q9MIgF51rDI+/fpmIeZs9XSvhdXz3IShHaqaPvwYQ+nlfEekjCYajRv3WJA4PVjhZs4jb8pQARTk0gFGUjR12Fny13mv40WGk31XjewocRKF6Kr3SiGNvdVwk6tVNMCz8S+BXNNuq0I3Q8lfQxCZk+qJ9E4GYsFLjFtTXzp2qev2lh3D5MoWt+9fXm0LlMDAaMfQ38q95jhi+8UWNEEizVfLCFeeJdfoRm5RxYrSvlOzsOrtvZBX0MfJbzKtMq6l99OL7K52avKPIhp/ReDwmcFJOE28hfWcBlaM9ZSC3Dk3Xjo79/bSlYy5sRq60cNlddIMY/uVKrd4M61ULKvld+6nKU8XJjA3Tyb4Yeg5bQmIF8gNI2Dm7iK0wXoqB71x7jjzMavvTNlJhUUsislva0Hs0ZXUnMXr4RGdP7mA+rxZ5Ykc6B7Xb97fvCl5trDmr5TXede1Jhxybxxxchy0tHuq+ZtB8J9ax64TRs4brVCIeK9wnHlcE0lW5/qF0my/M5D9HisFH6eLvh/YgeC7Rdx/zvD8uhf44TDqQOHXCHXGyUGMhTwoPL/fs0KODnSIICdkTJ1frNqcvQP5RL8tzfwyfhkY9KdVp9rNjf3sUhksZ+lyBxdFT3RJaUT5cn5xnH0sSHiaJyjJWDMywPvGXp3eIweIz9dM0oKXBKKIeI4XSaSIrP14BEOmhLPiwzSH1PqBB5mOqC735fmmdzl6puxYXx29fHn3ueQUAH5jr2GYqK2Aj/+2sGVQ8Lq1MOd596OlFBKDBfmnE6FL7ZrHXX0iHmJrz547WAO1zXZ8sP/0Br7Z4qe0mEg+QhYrymP6Y7UcycMZjSj8ZHbvZ3Qc+El2Pm79yiNNDe4YCTZs7T1zG/HRfgS52HwA9GKfvS6FRrfxoJEcZh3Uzfytvlv0FR1qWQ2XNm0XxO4TDFEsHhw7fxzvZ31qjUFOwWK/kMgM5NjhcULmGkgujpoBA6moXLjC4gYLN7QLYCMl+cnAqLFXLBOqiO+lPYM93a7SduzW3br5uDWgJdLkdUujDIq+h7khUGJC31S8DJtvHPmUwrZ1kNTctHSazAvaHXIUwjnBBzqgJI4Uwe+6zJU9pjlmRhCvpSuBOvlSLjlDnLgjhsB5Nx35XdmQMNe8UexwO72JNImqYAt40ayZFDdivwJk4ASYXoCvyIjGh0yV5wIPRlgK4pbElcH7qmK6+O7mEnrY4CKwXRTUSSZoQ+H05HKOmDGu2woVjF0sh0EETO6C+/1H6iwUDgqkbdzSuGSrp5HdVyWCgr67y+V76CVFlfbfKawUUQVjw79OdT9AdUs4NA/gGRrRuanGIsDqfUdmyxDklyTr1IinmFJhnLxa0aYHgQNTeJheAeZyRH/nU/vQOl6lsZ4quKDEISdP6WjOCEE6eDDtjHy1krN0BRtkIjf24dvJ8HwpIPPS6GtqsDon38jf213vxEziNuJ42OGZj9RkE+f0URZ/zlmWR+oqPEnrgW+e5e0zuB4XbI2E9rlSo+dYwSY2yT4A7si5XfplLbz+6J9lUBMSwXciHJDgI6e6tZA2V+cRWBGMMTwO0gLW854KDUYwACytFihiYDSh7pULLsX+mOF68YbQ6h8R8zlPf+EEEQJ0xPimS1sVIC3FYsEZnXCi+uuVpIMgB3XxX1sw6I41FujK7k4upDyac4GtCBwF3b1asUAXJTh22Us5wZKdl0jqdObmT4rLgyaIp8zvrIAglfiomm2iLWLnjsHSVOVCNAebigwOphv+SufON7YewQuR5Jj3Agh3E3vEIKk5RcZelEy4G8N838FIQ2bszTZ0LZCKdGZe+fF4if8xfPsGvLkKpD41y1CQwafbPc8J0kSy8Z5AlPEX6RzxI7crtxVjOz+4yccrVJr0Ri1GzumOb1a2SgMmr9wGayLq8YFl/MHi5anqJmoZ36MyiQDt0L2Ri2OaTAdanHDbrEcjyHiwdHYl6tWHBsQhVLpN60WAr/0sP2g3I+pVeNryMfj0T1inc8bm8bde8nHghnOlcCqXyyMduuDr1Q2btBmXRVfptTi/SFHSGJbZUWsoP1mYhp5IW1bPbzr83HM+XDPS65V/sg1Z0N5+s1mwB+k5liWLc36RCvBz8kkp3uOvB5nSxfcpWJkpI+qR8lP6ospVXdTXqu5Ytogq/asPgz4NiMlBQF4CE0YXDZiDRlUK/5sHVRQAVtgKVSQL2X1vLWfAPOhfDq1uIrwYdcgpaYfUxPsnltWNrKUpxEH+dsaFE+ZJhhZKhchUvmk7M2+R1GrNp30R6LONxO5YnMWZ6fpqhycmOsnPman+z1dPL/BImNm8HRRkBE/8te3OLCs3IgByrGuOTu7H03hZGbXP0RPwGhjJrn3AOlLMVn8U2pTcqlgWtKudQJNhcpRgX4v3PttKfyWy0lm/SoAyrYV+esqBg8A9iVonQHou4sDLfFv3asZ738INB6VqP8cFRBgV1XLCc8g1Qmq5Vzufqe/ppcy9l7rntYFnEzTLfk8xcIVSw6rmHPwkLs7xm1gwqMneAUPzgPnFQa35KeNutO7BKcvGuJNfD80ylyV0/C7zFoF86KfjFtkMBY9/wc1uJQE+uCrY8aDESJXljAmHqS5u5Qd6ZqzeJoF3W+6KhB3RGsrc2q7CTdmyX0evnLjI6k30cvVO70dNMBXuNsMLWnNmslaQO68jY3uZNaQ+xShbKdAlXlBYyyg+/Lr7DbwM+ia7dzeFbsqfs4mEOEmJL6eWOfYhpL7qMQO0DG/baOS8geLqUBFYWQ2eoMn3qGIeG8gevgnBtIAjBig691/8JvLqcn46T6VbxspOdGw0VdCPtex+H8ydqKhO4NV5xwOTNQkjdJ0E3RnKLv/8r7PIKGxhsVEXWq2hWkCcg09qr24ht5NJssFAvg4/eDTK67rVGJsdB88L6QuBg0zILnidfAOzld0/y9iFAjiYM1u8HO/8KvbhFnAhRZbTvx9aYNaMpOCNwb342h3s9L5pqXAwIVPTI+cI5Qv5l064f8uHMv7GiSlwU75v0wfG9sq0oJFycwdk7ACv7/gaAFlYpB7gfsbv/qfIzRD/LjOD9eZCeEislfI62x/dZ7SgafmyPubjOmWbL6OZRJDefF8BkJHPMiRLvJ4FJl8Xh+2sNB/m0r3ysxnAXxlvGnjydKgz6vhpr1kSbvDtXY3WRdWKh+dulLn4OY6PACW/NqqwL4FParlHE5oagYqmm5rPFx27ztVN5F84g8+Rx1eCYDIxAtvbIv5RV+YOqygBB/65zkdm21MsxtLszeDmk406PqCGa8aEia5RH8xKvfOnm1OYFYo3OTZqP4syQEf/s1VkwON+akhFmFBReqrSOkp0k8RtaTqA56HT5cbko3EjTFzu2dvSSgxjp6wiIC9iAVx5dzzi15MEHCblWmoSooN28y0qBjBCYBoHfwN9s0VYgGREG4HED2j9yNIcmG7qDrNTNGtyX4j64Db/x7da76X8PFJtsdA3KjuKLEcTDG8pb+XFYHc2ChQwe6vsq6PtEW9J1I6Q2WYGIaEhtFKgqsO18R6ebzZAnp9y7T0Fk62NkQNhWUKGHEvoEqBi6lSBiw2BiJ8BhJLux19Vf0KBgsQJ2ByeGY354f80j/u68DnRb+VZEwH5llHyQpgNv30Dyx20fSbBEr9J7qU1KUGOLFNYGoAc8uAEceUaVVT+ZlS4apcuhZxBlSuMLD5yLi5nG1UtDYGAGNH99WSTeqlq5UcniafWrbcj/84RXz42cDVHg0QA8NGLve+Jv0emPvp+Y3wIlH4xXMd52HJQ4K77rMqvC2TsTNPNQGwtAXRZ6XAMo2emGNm3ZJIk92UuKbLDB8VUNPTM1mp7pazgKaNxdPmXZzwy/rGksxPcEDowwU+3JIowssGqrMtjviNeee361y6reswsdJsaQpAzFVp+VZygO+7BUyU1foMIFxVE8suYyFE9/GiipPBPYqrqdCS0cDoFhxfNARfcRauqy2vgNhQSnDIx2ZAToDRECuJwbAB0zwLbXUSVsqeD3aKd0lm/YrcJjCch3pbOT9W75tDIYASy6f/jbgtS0LvDjEEjpa8ulzfazPfCXIW7pH+ZpmSuET6vuRr3IFWDyTTnaMr1fcj/pDEr29wRo2OUZ2uj650RmMeM53Lkdno4eDED8sLXaz4b85y47LqWj9McdUXEKndt9xis5zoeIb8exHDXkGOxJ7DWhObNVRhVibj+YVBTiFgaK8i5AhOxCc7N64gMuw9ndNQbYcqXocwkem82qZZbAD3YA3xvWJ0BwmgNePMj618zFS7ulZluo+fvwo0Wxi2YjJI6BLvJQntKxDuQIpsd7vaKQApL15Xb2q3uFPOS7nB5TOQ9PE8hCr2NJX+bdQGUIH6aJJGmANjQ5StPfAPhyZWm7NkuVP0wY+BMmLGOnHXod0nmcE2TIJF+oBpKSYpv/WFhKT8KMHqO0InbIE/zjos1DUHu8mZ6ayeiL64Jqj4WV702bhxn+rvaumPxIgiV8rvLECiLT/9bUroxk4qr6PxNCjrnTG9PXNU1R2VRSszTiIdR4FP0KaEu954FPTrIpBfHEom7Sp9xuKYp402VpoRgfOGiPs/Sv+i7FfuXodjYKob4HrD7EGMWHrouUKeEXDC7uh7nO/jp7l2t4jQo09yy7WQCzj1lov/E1WzxLiesRLLB+ojpHyC8IqNs/rARyF4v7hmkShaTAjdSp2JRdQcKdqMNuBRKIi6+V4t/UGFPxFLyqSl7/mO6ILFyAjDxlSZxIUJZ9wpAFOG9EBxRHWjkWIFyemHEsWAdYlo80gaUWfi+vgFpulllycrWNZSrScEhBvpQQWn7XEHGejzGSJWhFDZJ6YdxOTpNMwLWLd6RU527EIk2tUAJBvs5zpQuAI043hqxR34QvmaUkjUAPgSNvgF512Vv1duCplOllJk7MgOisQ5KMq4okFHzXSdDFn32KnOO3JpdNwuhFMjD5lNfNfTyM47bBc9bQrzrwJe89EwtkueFMHhuGlYVbQ/eNE9eGK3uHx1hU5sVsQ86loaMBPUoJauwhehj0xTCnFmSzs8zHGU+4LRDSZbYgwAGmq635US18sK0xfad1rYwGMVU/Z+cgVUam5K0yABiRmNAkXa0UTUR/ZBOpXugGzJBWYMH4gJhk/P5QlkpYUk1+AdYsihHkad4vhn0ulTHfB2wTRAvSStc0CwqSDQVZYSjiJp4ihFtiSxHcp9cCiue0LuafpYBzbw0kSalFXTbTd+cat5QEISwPmEO0jvVDDoEi0/7F+ydfjeCISH2oP0CHfvqdGIa7Asz/dpTH75DwLsj3yzbSpKUkSrGgKtKQBQodfmHO28KZmWmWf7O2YaIMPW0GrhE02uZlNCbcqQZBu2ZJcErfsuFPoG0+MgXoGeqGCDklOnAzAZVUWgphJApbO25pDEE2fcSH1CTrjzXvgux8rPaoK9o4gwDH8JVXxW2LhfT5Ignxm3OVL3tb71BJhBf/D72DAHQWcqFzH7xCsRPwwru+YNt3Zs8VsHobQVQzbdHW1cyruOV4M/z0QA81SSKpf7NL/+1Ef/v4+//7USFAFelIqNx1uVBU4EUnsDRJCRC23jRd5L9hZRL0fhDxEtu0RKOPISYmsFBFUBPt6sneG3T7rLSggXg7TSl7ZMvdtppLsSKpwqGENmEpXgMHYpuyqSWU0RxMjUOG0OHRmjTGOSMrk4ATlGpptqtcAeZd03IIAPPvyoDZZS/H+63hzDiDftezwD036QP3y+9fMgJ+EvIka1oXxx58jyD/CmwUQG7hRCYhVVOrjPYDKfOkh3r/fxfXAanbsrhMlKfnE93waiywEIShwR9LfJ7pWh+gFPgcbcAAvomUi0sxz+VncmVu730+kvIFbKltBdnxpfrJFDLj+lQh4LZ9CyzDTOe7Oc714Fn1m5Me1YGyWOEJiIskJzNhMIP0YpnYIwvn9rPjsfTYqO6kKMA3flwmtBy2wUoXAb6sOejY8CaF/QFS8bASir+HqjUFtCfJpk90OnNj+PK4bXtZoN/e8VkTOFoBbrQiJUN7z1I7iMwSmQFCb3AzGP0d0Rt3tati4vk+oypcOqjzH/KOtv817pZkWP47ZhaR8AdrKAtn38m8qIWbrQ+tOJxuVuYFtv4V85CQSoU4jabOHa0jSbVZ8Z2zCElQ7M52cVhAbSOR22MtAOKtnojEFnz/qIyUSUiSo/KV8XK9Xizdmzrfw2ocsb58A9uXi2ADLSpaHFLG8z9LA2Cx33rdaFoUNh3M9v+VTdCrweaOKO6n7KXRQWHnGgT1gMCZ3UuOltHvpyeF8wcXgLd3/2eeZNaM8GTArzN9WY5kIhnvwzQ46onq/FvE6iFT3KnbDnU8AkGKgP0iVUAlsvC4rAuN5jH6+aDuP17dNKvKj4eLE5OP/zg/Evb9H7oIB4IJ9vl7RReZZ8EwkBVoyWKnDBXKAAGeBu29zbHHChDvrtiedgi3rhYFrZiPD1YflKT4Z7RITMOs36fqDTUCU4paBCHNdQSjUU8dd08x+5cAF4qbI8Y5Ajw/4Zqa6SBQQqNh8ceBgOd6T3TmpIyHg/7V2F0dM5U+L7j0IEkU6Rur7v1UumGvDiUrWD84VLUm7Pfhn48UOLcJV3ufWf+galCC1sWLgaRYXw8C/Cd1evu9Uv4HnTFMi2AFXJSEuFI9uyzFWp1YK6YNiCAShNeQOYsvpYUn6mXKCMpfFEVAsW/978ALsuIQB8rUNv0Lb0QnlOnkChocHk0nOQln5XswFOz+wnDz9TPtxSy+5InTckeZ6lV9EMPEMiBwW/npe8OxK1m7jt1pRRgYZdGTk3XckDe97o8gVOeF/D1r7ANnIE2CB32ArcId5hghj+zxamD3us7xIBa5yVCQ91UNgVjjrCUFSPhxFVybpmP8kHgtkjFDFGCI4TCr4KQ7TsJWEgzCClvCbgv6baueSnNukLj205mWrD3zevRv3cbEXedqKUeyd/z+4iCnDeXuApbxJ4kO2EStmaQ2bR53YdPySEddVbB90N8lTNJ1nAhLN+LSrxWOwTrAy0PnsD+cho7+aB8JZQyM6dYv8F0qSCLgcGgaoLTmKUmnQuqnuj4WW1M2imvehgWkOk44MS2anw2enlH12C6D02rx5w4c9aLa5jLc9xmH7/w7Q8ddQR2+5Am4EzT5um6xR5NIct2Mxr8/tw7cBs3cEOHc+BmIY/J2y4yQgSRpOxYGM2Xfm9o95lafNEz4G4L4tSEJqsNfJfUHvQcRPL1Ie+9zjNm4hgBTDT7d/fht3Z0YXVo0CrqInBk9/rrjTcxg0NYO+Ip+hBQUipYj5ORagxct8jpYia5I3u6YdSNfmpZAvCDSuAQJ9/rb09pFiCRngXqztH/2xfUB6pUBCPdrxntAL/JgV3FrSFHQCCoHibNQ0DWje4YHE37n2+IwtADUOrCeb28AHCaT/2QIcCe2ZFfgtHQBqPUvMAsipDNKbynmggHEh3zogUYN23fpCx+5ynl0etZ5IEOM7RoyjpG9PWnV4jHPi6jOYESnuVEXCbusQn5fMJawW6wXMit+mQac+7Z2isH65psa/MaTSHUiLk6sA+HCS8/0xD52aIe6AgQUiEiaz19a/agMgWn1WU8H+q2z/2EcA9Boaj7p5+jrfapeADNGl9/EZ3KQq6RtM+6KVab30wQoEvtOB90n+yHKwHit5naLgCM7vAFxcDNpdPHHvfK++Ht1FE7tl+vYfvI20p2+/83cpTUBDFXdhipGFMPq+CL1/ZdQG9k5/w+wm0wkyD+fyUL+TC7gAeoXEXBerjLiDYZj1UyCavsHhYEEkvXHuR5aE/06yj+HHhzaY4+ZkEisadAF6usjuNwuYlF9QdCX/VGuBpMKJz+zHJDfF0cmvEaSacKpSnaehh/EqOuiR3ZQpusqtsVpDBih/fILAVfozJdUruNNwZ70TSaNprAENKR3c95u8gue54i4zBbfCbWFqcVxElTHY0xVU5ZQRxOTQJECNZvpoSU4RyIeta7JR5S/LVf1t7+DjWwOv+MfGHZ3PFsx+ZZIR/uRglOCDJxaXF0Rqp+Pt+emR2wIQwobkIvOZCiC486rnG//6qVamXCW0Goml4OLTWUhdD1y2ymHfPPzCfIresqf0Sz/tLz+tmDsEwXmr8kjvhrM/btf/uPBV2QhqtWU5W8wGSp8YBnaCNrFhzLglrm2z40edHzN69bdoqElUk3DWy6oQusjeq7dTKLopZofZtegePaM+mzNuG+7nD73f/k7PKPTd23AkX6fFN7nByB6IktahjTqJH5XViVW8lOGruAuuagmDbmMF4fzbxBZlfdMopizeOwNAJ9acbwxt3RaQxM/glJhHyYVXPCGXlmL604v7DeOansiC+7I7cLI2pPnzeY4L5uakpPL5Ep+GVVPsja05x9cCBmDPUD29owrwKsWAJDoxFATZhr6EqEkvk8gPv/6O85Uv6QauOj6yNmazi6m4iWZmjPONpIy6BLNHlTiYqEIiiXTK+bNIGFd92p01lYmPr3rpF89CRPQdMJbaPsVcNW+bE9ar/sr9iQqBDvWWwkjF3eC7TMGn4ro2xMwR4t6g9a1rHX5+vZsnb1jZYwy3YDosQ2oCoRdsDvkcJKAtJuG/uzY8iwYrnKFmMDpuKRRUY5hDEy0+oCB57CuFXiLutqoRZW8mjOH4NFLZ/IbRiX8diqOf0N+gHC+J7bKUs5zhG/R/7lk/WPU4opg904RlRgbYBJOWJvqJ5LDmIunIZMwVMzBYW55egTdDuBXCa49IYsysb0f2wsd9ZAQRV1EO2ZLnXWYWA+BOc960gEmUuqVXj7Sb/gYdc8UsCeeymB43O7og9QXIdeMv6/NhLgepbd0g04Z57Z1m1upyIrsEdqBmY5pAgxuXF8GPT0JqZ3O/3a8i6UwOFWQ/8p4ekp7CIFrvVku5FAnvAyo2TNYE7W7LGQAJYtlsTJkLpNx5+Sf1khSf8LhIUNohBN9JnTW5/rPZaIc52/Md3i/pCF8uW76ZIR1zd5W/8HTyzhrPjKyPjEupXhDetFbI/VAM/Yx3J10WTFWR3Xw/FX8YNfInJTfQVbng1h9pU25oYn47fXiKqqvv7GswnmPqfmQs5p0D+gX+GXzvw9P2Yeg6aWbWWz9eYdH6gG6XoWXchxyuNNX+fgiwf3oUxYhlq7xjThYgO04EAmbFPYz1G7vQERqonpQOiVKHwg4QKSiqHm+3ZHPdosNDkGdJ715u7MsGF621FqGGMsRAGng8mfheXKaN/ts674J4ORGXJgmV1L9azDzotUqyMWrKi6kZfcV7gj1iNq1d5buezt3IAgYskHUmf8ASsEZuvfVWbGkHF6n87hs7HlEJ4OMYOl/J62QIFexKQx49Dw+dTMp3KKLLYokceKo6lRIxSa4h1wQc1gMj8klYOjkjubGBJqGtkPFsPOVKvA5jr1de2uUJY5oshirUDxXx1ypODBobIetaQIUZZYmT74C6LO9ucc13SFRUPhc89tm9D/BXk41Q3mS5xuN3h6HHysINJ/dQ/5BncD1fpKBbSWTpMZ2hWNvUASsxoFIB3WoUNfeFhtUWQhEoxKwLMS5ymBpDT5u3uvIGQ+gCqFgFMrUvjGnEzCTIkAgIJTnytt6oCpAbf3CaWHODOBKHwTGWkOqlsh4xYA9p4wF6GyIXHJR5P5FCzwDOWdVUpI0D4Bag6Tg+IQM5f02KsOFy+HRLA/TO9RkrdSOQXa96Qmr14zhUmov1HQBY5s+JTZCI4d3baK6EVb1X/GbPnEnYKhuhOTXCTXsHERfoihQPK3PxesQqw5Dacfe6MEDIjw8pUAo5Mr8lCa7OWp7ezzti0vMreBgZj1dfNvIgBJRQ+wxIRs+jtze+Sg+64wbuuvgbEgrGvtGYQeLjtyNXshovdB56VTj6TkLRsWtlJRADk6gIKRM2b/i4XE1ZeethpKuhl4Ei8df0iqtydmlNQAIetjL/m9f0XXdhZq4AYPyGYCOZAAAA";
+function FolderPhoto({
+  src,
+  width,
+  height,
+  radius = 18
+}) {
+  const [ratio, setRatio] = useState(0.75);
+  useEffect(() => {
+    let on = true;
+    const im = new Image();
+    im.onload = () => {
+      if (on && im.naturalWidth) setRatio(im.naturalHeight / im.naturalWidth);
+    };
+    im.src = src;
+    return () => {
+      on = false;
+    };
+  }, [src]);
+  const r = Math.min(Math.max(ratio, 0.6), 1.0);
+  const w = width || Math.round(Math.min(Math.max(height / r, 190), 340));
+  const h = height || Math.round(width * r);
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: w,
+      height: h,
+      borderRadius: radius,
+      overflow: "hidden",
+      backgroundImage: "url(" + src + ")",
+      backgroundSize: "cover",
+      backgroundPosition: "center 40%",
+      backgroundRepeat: "no-repeat",
+      flexShrink: 0,
+      boxShadow: "0 6px 16px rgba(43,63,20,0.15)"
+    }
+  });
+}
+async function latestPackImg() {
+  try {
+    const res = await fetch(SB_URL + "/storage/v1/object/list/" + PHOTO_BUCKET, {
+      method: "POST",
+      headers: {
+        apikey: SB_KEY,
+        Authorization: "Bearer " + (session && session.access_token),
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        prefix: "",
+        search: "folder-pack",
+        limit: 50,
+        sortBy: {
+          column: "created_at",
+          order: "desc"
+        }
+      })
+    });
+    if (!res.ok) return [];
+    const arr = await res.json();
+    return (Array.isArray(arr) ? arr : []).filter(o => o && /^folder-pack-/.test(o.name)).map(o => SB_URL + "/storage/v1/object/public/" + PHOTO_BUCKET + "/" + o.name);
+  } catch (e) {
+    return [];
+  }
+}
+function FolderPage({
+  meals,
+  packPrices,
+  showToast
+}) {
+  const [packUrls, setPackUrls] = useState([]);
+  const [fBusy, setFBusy] = useState(false);
+  useEffect(() => {
+    let on = true;
+    latestPackImg().then(r => {
+      if (on) setPackUrls(r);
+    });
+    return () => {
+      on = false;
+    };
+  }, []);
+  const packImg = packUrls[0] || "";
+  const changePackImg = async file => {
+    setFBusy(true);
+    try {
+      const blob = await compressImage(file);
+      const url = await uploadMealPhoto("folder-pack", blob);
+      packUrls.forEach(u => deleteMealPhoto(u));
+      setPackUrls([url]);
+      showToast("Foto do pack salva.");
+    } catch (e) {
+      showToast(e && e.message ? e.message : "Não foi possível enviar a foto.");
+    }
+    setFBusy(false);
+  };
+  const removePackImg = () => {
+    packUrls.forEach(u => deleteMealPhoto(u));
+    setPackUrls([]);
+    showToast("Foto do pack removida.");
+  };
+  const [sel, setSel] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem("f360_folder_sel") || "{}") || {};
+    } catch (e) {
+      return {};
+    }
+  });
+  const chooseSel = (lid, mid) => {
+    const n = {
+      ...sel,
+      [lid]: mid
+    };
+    setSel(n);
+    try {
+      localStorage.setItem("f360_folder_sel", JSON.stringify(n));
+    } catch (e) {}
+  };
+  const ORDER = ["tradicional", "prosaude", "baby", "especial"];
+  const lines = ORDER.map(id => LINES.find(l => l.id === id)).filter(l => l && meals.some(m => m.active && inLine(m, l.id)));
+  const itemsOf = l => meals.filter(m => m.active && inLine(m, l.id));
+  const photoOf = l => {
+    const its = itemsOf(l);
+    const m = its.find(x => x.id === sel[l.id] && x.photo) || its.find(x => x.photo);
+    return m ? m.photo : "";
+  };
+  const allPhotoMeals = meals.filter(m => m.active && m.photo);
+  const HAND = "'Caveat', 'Segoe Script', cursive";
+  const SANS = "Poppins, Inter, sans-serif";
+  const OLIVE = "#3e5a1c",
+    DEEP = "#2b3f14",
+    YEL = "#f4b92c",
+    ORG = "#f28a22",
+    CREAM = "#f6efdc";
+  const theme = {
+    tradicional: {
+      brush: OLIVE,
+      tag: "Sabor caseiro, do jeito que você gosta!",
+      tagColor: "#3e5a1c",
+      word: "TRADICIONAL"
+    },
+    prosaude: {
+      brush: OLIVE,
+      tag: "Mais legumes, menos carboidratos.",
+      tagColor: "#3e5a1c",
+      word: "PRÓ-SAÚDE",
+      note: "Pensada para quem tem diabetes, hipertensão e busca uma alimentação mais equilibrada. Não substitui orientação médica."
+    },
+    baby: {
+      brush: ORG,
+      tag: "Do freezer para a lancheira do seu filho.",
+      tagColor: "#e07412",
+      word: "BABY & KIDS"
+    },
+    especial: {
+      brush: "#b8841a",
+      tag: "Todo kit semanal leva 1 item desta linha.",
+      tagColor: "#a06f0f",
+      word: "ESPECIAL"
+    }
+  };
+  const price = v => {
+    const s = fmt(num(v)).replace(/^R\$\s*/, "");
+    const i = s.lastIndexOf(",");
+    return {
+      r: s.slice(0, i),
+      c: s.slice(i)
+    };
+  };
+  const wrap = {
+    position: "relative",
+    overflow: "hidden",
+    width: 1024,
+    flexShrink: 0,
+    margin: "0 auto",
+    background: "linear-gradient(180deg,#f8f1de 0%,#f1e8cf 100%)",
+    color: DEEP,
+    fontFamily: SANS,
+    boxSizing: "border-box"
+  };
+  const panel = {
+    position: "relative",
+    margin: "14px 22px 0",
+    borderRadius: 22,
+    background: "rgba(255,255,255,0.5)",
+    border: "1px solid rgba(62,90,28,0.12)",
+    overflow: "hidden"
+  };
+  const photoBox = (src, w) => src ? /*#__PURE__*/React.createElement(FolderPhoto, {
+    src: src,
+    width: w
+  }) : /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: w,
+      height: 230,
+      borderRadius: 18,
+      background: "linear-gradient(135deg,#dfe8c8,#c3d49a)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center"
+    }
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "leaf",
+    size: 64,
+    color: "#fff"
+  }));
+  const rows = l => /*#__PURE__*/React.createElement("div", null, itemsOf(l).map(m => {
+    const p = price(m.price);
+    return /*#__PURE__*/React.createElement("div", {
+      key: m.id,
+      style: {
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        padding: "9px 0",
+        borderBottom: "1px solid rgba(43,63,20,0.12)"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        flex: 1,
+        minWidth: 0
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 16,
+        lineHeight: 1.25,
+        fontWeight: 500
+      }
+    }, m.name), m.desc && l.id !== "tradicional" && /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 11.5,
+        lineHeight: 1.3,
+        color: "#5b6b45",
+        marginTop: 1
+      }
+    }, m.desc)), /*#__PURE__*/React.createElement("div", {
+      style: {
+        flexShrink: 0,
+        whiteSpace: "nowrap",
+        fontWeight: 800,
+        fontSize: 21,
+        color: DEEP
+      }
+    }, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 12,
+        fontWeight: 600,
+        marginRight: 3
+      }
+    }, "R$"), p.r, /*#__PURE__*/React.createElement("span", {
+      style: {
+        fontSize: 14
+      }
+    }, p.c)));
+  }));
+  const title = l => /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "relative",
+      display: "inline-block",
+      padding: "10px 44px 12px 34px",
+      color: "#fff"
+    }
+  }, /*#__PURE__*/React.createElement(Brush, {
+    seed: l.id.length * 17 + 4,
+    pow: 5,
+    n: 90,
+    color: theme[l.id].brush
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "relative",
+      fontSize: 34,
+      fontWeight: 800,
+      letterSpacing: "0.01em",
+      lineHeight: 1.1
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontWeight: 500,
+      fontSize: 28
+    }
+  }, "LINHA "), theme[l.id].word)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontFamily: HAND,
+      fontWeight: 700,
+      fontSize: 30,
+      lineHeight: 1.1,
+      color: theme[l.id].tagColor,
+      margin: "8px 0 0 6px"
+    }
+  }, theme[l.id].tag), theme[l.id].note && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12.5,
+      lineHeight: 1.4,
+      color: "#4d5c38",
+      margin: "4px 0 0 6px",
+      maxWidth: 440
+    }
+  }, theme[l.id].note));
+  const sizeTrad = (() => {
+    const m = meals.find(x => x.active && inLine(x, "tradicional") && x.size);
+    return m ? m.size : "";
+  })();
+  const packTrad = PACKS[0] && num(packPrices.tradicional) > 0 ? PACKS[0] : null;
+  const packPro = PACKS[1] && num(packPrices.prosaude) > 0 ? PACKS[1] : null;
+  const feijao = packTrad && /feijão/i.test(packTrad.note || "");
+  const info = (icon, t1, t2) => /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 12,
+      flex: 1,
+      minWidth: 0
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 52,
+      height: 52,
+      borderRadius: "50%",
+      background: YEL,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      flexShrink: 0
+    }
+  }, icon), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11.5,
+      fontWeight: 700,
+      letterSpacing: "0.04em",
+      color: "#fff"
+    }
+  }, t1), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12.5,
+      lineHeight: 1.3,
+      color: "#e6edd6",
+      marginTop: 2
+    }
+  }, t2)));
+  const ic = {
+    stroke: DEEP,
+    strokeWidth: 2,
+    fill: "none",
+    strokeLinecap: "round",
+    strokeLinejoin: "round"
+  };
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    className: "no-print"
+  }, /*#__PURE__*/React.createElement(SectionTitle, {
+    title: "Folder",
+    subtitle: "Monta sozinho com as refei\xE7\xF5es vis\xEDveis no site e os pre\xE7os atuais. Linha sem refei\xE7\xE3o vis\xEDvel n\xE3o aparece no folder.",
+    action: /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 8,
+        flexWrap: "wrap"
+      }
+    }, /*#__PURE__*/React.createElement("button", {
+      type: "button",
+      style: btnPrimary,
+      onClick: () => folderImage("cardapio-360food", showToast)
+    }, "Baixar imagem (WhatsApp)"), /*#__PURE__*/React.createElement("button", {
+      type: "button",
+      style: btnGhost,
+      onClick: folderPrint
+    }, "Salvar em PDF"))
+  }), lines.length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...card,
+      marginBottom: 14,
+      display: "flex",
+      gap: 16,
+      flexWrap: "wrap",
+      alignItems: "flex-end"
+    }
+  }, lines.filter(l => itemsOf(l).some(m => m.photo)).map(l => /*#__PURE__*/React.createElement("div", {
+    key: l.id,
+    style: {
+      minWidth: 220,
+      flex: "1 1 220px"
+    }
+  }, /*#__PURE__*/React.createElement("label", {
+    style: labelStyle
+  }, "Foto da ", l.name), /*#__PURE__*/React.createElement("select", {
+    style: inputStyle,
+    value: (itemsOf(l).find(m => m.id === sel[l.id] && m.photo) || itemsOf(l).find(m => m.photo) || {}).id || "",
+    onChange: e => chooseSel(l.id, e.target.value)
+  }, itemsOf(l).filter(m => m.photo).map(m => /*#__PURE__*/React.createElement("option", {
+    key: m.id,
+    value: m.id
+  }, m.name))))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      minWidth: 220,
+      flex: "1 1 220px"
+    }
+  }, /*#__PURE__*/React.createElement("label", {
+    style: labelStyle
+  }, "Foto do pack (marmita + feij\xE3o juntos)"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      alignItems: "center"
+    }
+  }, packImg && /*#__PURE__*/React.createElement("img", {
+    src: packImg,
+    alt: "",
+    style: {
+      height: 40,
+      width: 56,
+      objectFit: "contain",
+      borderRadius: 6,
+      background: "#f1f6ee"
+    }
+  }), /*#__PURE__*/React.createElement("label", {
+    style: {
+      ...btnGhost,
+      cursor: fBusy ? "wait" : "pointer",
+      opacity: fBusy ? 0.6 : 1
+    }
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "plus",
+    size: 13
+  }), " ", fBusy ? "Enviando…" : packImg ? "Trocar" : "Adicionar foto", /*#__PURE__*/React.createElement("input", {
+    type: "file",
+    accept: "image/*",
+    style: {
+      display: "none"
+    },
+    disabled: fBusy,
+    onChange: e => {
+      const f = e.target.files && e.target.files[0];
+      e.target.value = "";
+      if (f) changePackImg(f);
+    }
+  })), packImg && /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    style: {
+      ...btnGhost,
+      color: "#d6483f",
+      borderColor: "#f0cfcb"
+    },
+    onClick: removePackImg
+  }, "Remover")))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12.5,
+      color: "#6f8072",
+      marginBottom: 14
+    }
+  }, lines.length === 0 ? "Nenhuma refeição visível no site ainda." : "Tudo em uma página só, pronta para enviar pelo WhatsApp. Se mudar preço, foto ou deixar uma refeição visível/oculta, o folder acompanha.")), lines.length > 0 && /*#__PURE__*/React.createElement("div", {
+    className: "table-scroll"
+  }, /*#__PURE__*/React.createElement("div", {
+    id: "folder-sheet",
+    style: wrap
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "relative",
+      height: 250,
+      overflow: "hidden"
+    }
+  }, /*#__PURE__*/React.createElement("img", {
+    src: FOLDER_LOGO,
+    alt: "360 Food",
+    style: {
+      position: "absolute",
+      left: 52,
+      top: 40,
+      width: 430,
+      height: "auto",
+      display: "block"
+    }
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "absolute",
+      left: 520,
+      top: 44,
+      height: 160,
+      width: 2,
+      background: "rgba(43,63,20,0.55)"
+    }
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "absolute",
+      left: 552,
+      top: 44,
+      width: 400
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 21,
+      fontWeight: 500,
+      letterSpacing: "0.06em",
+      lineHeight: 1.4,
+      color: OLIVE
+    }
+  }, "REFEI\xC7\xD5ES EQUILIBRADAS, SABOROSAS E PR\xC1TICAS PARA O SEU DIA A DIA."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 10,
+      marginTop: 18
+    }
+  }, [["leaf", "Ingredientes", "selecionados"], ["heart", "Mais saúde", "e bem-estar"], ["clock", "Praticidade", "no seu dia"]].map(x => /*#__PURE__*/React.createElement("div", {
+    key: x[0],
+    style: {
+      textAlign: "center",
+      fontSize: 12,
+      lineHeight: 1.25,
+      color: OLIVE,
+      width: 110
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "center",
+      marginBottom: 5
+    }
+  }, x[0] === "clock" ? /*#__PURE__*/React.createElement("svg", _extends({
+    width: "34",
+    height: "34",
+    viewBox: "0 0 24 24"
+  }, ic), /*#__PURE__*/React.createElement("circle", {
+    cx: "12",
+    cy: "12",
+    r: "9"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M12 7v5l3 2"
+  })) : /*#__PURE__*/React.createElement(Icon, {
+    name: x[0],
+    size: 34,
+    color: DEEP,
+    strokeWidth: 1.8
+  })), x[1], /*#__PURE__*/React.createElement("br", null), x[2]))))), lines.map(l => {
+    const photo = photoOf(l);
+    const isTrad = l.id === "tradicional";
+    return /*#__PURE__*/React.createElement("div", {
+      key: l.id,
+      style: panel
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "grid",
+        gridTemplateColumns: "1fr 400px",
+        gap: 22,
+        padding: "22px 22px 22px 26px",
+        alignItems: "stretch"
+      }
+    }, /*#__PURE__*/React.createElement("div", null, title(l), /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginTop: 12
+      }
+    }, rows(l))), isTrad && packTrad ? /*#__PURE__*/React.createElement("div", {
+      style: {
+        position: "relative",
+        border: "2px solid " + YEL,
+        borderRadius: 18,
+        background: "rgba(255,255,255,0.75)",
+        overflow: "hidden",
+        padding: "16px 16px 14px",
+        display: "flex",
+        flexDirection: "column"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        position: "relative",
+        alignSelf: "flex-start",
+        padding: "4px 22px 8px",
+        transform: "rotate(-3deg)"
+      }
+    }, /*#__PURE__*/React.createElement(Brush, {
+      seed: 9,
+      pow: 4,
+      n: 80,
+      color: YEL
+    }), /*#__PURE__*/React.createElement("span", {
+      style: {
+        position: "relative",
+        fontFamily: HAND,
+        fontWeight: 700,
+        fontSize: 34,
+        color: DEEP
+      }
+    }, "Seu Pack Semanal")), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 14,
+        fontWeight: 700,
+        lineHeight: 1.35,
+        color: OLIVE,
+        marginTop: 10,
+        transform: "rotate(-3deg)",
+        transformOrigin: "left"
+      }
+    }, "+ ", PACK_SIZE, " MARMITAS TRADICIONAIS", sizeTrad ? " (" + sizeTrad.toUpperCase().replace(/\s+/g, "") + " CADA)" : "", feijao && /*#__PURE__*/React.createElement("div", null, "+ 2 POR\xC7\xD5ES DE FEIJ\xC3O CARIOCA (120 ML CADA)")), /*#__PURE__*/React.createElement("div", {
+      style: {
+        position: "relative",
+        alignSelf: "flex-start",
+        padding: "10px 40px 12px 28px",
+        margin: "10px 0 0",
+        color: "#fff",
+        transform: "rotate(-3deg)"
+      }
+    }, /*#__PURE__*/React.createElement(Brush, {
+      seed: 14,
+      pow: 3.2,
+      n: 90,
+      color: OLIVE
+    }), /*#__PURE__*/React.createElement("span", {
+      style: {
+        position: "relative",
+        fontWeight: 800,
+        fontSize: 28,
+        verticalAlign: "top",
+        lineHeight: 1.9
+      }
+    }, "R$ "), /*#__PURE__*/React.createElement("span", {
+      style: {
+        position: "relative",
+        fontWeight: 800,
+        fontSize: 72,
+        lineHeight: 1
+      }
+    }, price(packPrices.tradicional).r), /*#__PURE__*/React.createElement("span", {
+      style: {
+        position: "relative",
+        fontWeight: 800,
+        fontSize: 30,
+        verticalAlign: "top",
+        lineHeight: 1.6
+      }
+    }, price(packPrices.tradicional).c)), packImg ? /*#__PURE__*/React.createElement("div", {
+      style: {
+        marginTop: 12
+      }
+    }, /*#__PURE__*/React.createElement("img", {
+      src: packImg,
+      alt: "",
+      crossOrigin: "anonymous",
+      style: {
+        display: "block",
+        width: "100%",
+        height: "auto",
+        borderRadius: 14
+      }
+    }), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontFamily: HAND,
+        fontWeight: 700,
+        fontSize: 22,
+        color: OLIVE,
+        textAlign: "center",
+        marginTop: 6
+      }
+    }, "Mais praticidade para a sua semana!")) : /*#__PURE__*/React.createElement("div", {
+      style: {
+        position: "relative",
+        marginTop: 12
+      }
+    }, photo ? /*#__PURE__*/React.createElement(FolderPhoto, {
+      src: photo,
+      width: 364,
+      radius: 14
+    }) : /*#__PURE__*/React.createElement("div", {
+      style: {
+        width: 364,
+        height: 200,
+        borderRadius: 14,
+        background: "linear-gradient(135deg,#dfe8c8,#c3d49a)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center"
+      }
+    }, /*#__PURE__*/React.createElement(Icon, {
+      name: "leaf",
+      size: 56,
+      color: "#fff"
+    })), /*#__PURE__*/React.createElement("div", {
+      style: {
+        position: "absolute",
+        left: 8,
+        bottom: 8,
+        width: 104,
+        height: 104,
+        borderRadius: "50%",
+        background: OLIVE,
+        color: "#fff",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        textAlign: "center",
+        fontFamily: HAND,
+        fontWeight: 700,
+        fontSize: 20,
+        lineHeight: 1.05,
+        padding: 10,
+        boxSizing: "border-box",
+        boxShadow: "0 3px 10px rgba(0,0,0,0.25)"
+      }
+    }, "Mais praticidade para a sua semana!"))) : /*#__PURE__*/React.createElement("div", {
+      style: {
+        position: "relative",
+        display: "flex",
+        flexDirection: "column",
+        gap: 12
+      }
+    }, photoBox(photo, 400), l.id === "prosaude" && /*#__PURE__*/React.createElement("div", {
+      style: {
+        position: "absolute",
+        left: -26,
+        top: 14,
+        width: 108,
+        height: 108,
+        borderRadius: "50%",
+        background: OLIVE,
+        color: "#fff",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        textAlign: "center",
+        boxShadow: "0 4px 12px rgba(0,0,0,0.2)"
+      }
+    }, /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontWeight: 800,
+        fontSize: 15,
+        lineHeight: 1
+      }
+    }, "PR\xD3-SA\xDADE"), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 9.5,
+        fontWeight: 600,
+        lineHeight: 1.2,
+        marginTop: 4
+      }
+    }, "EQUIL\xCDBRIO", /*#__PURE__*/React.createElement("br", null), "EM CADA", /*#__PURE__*/React.createElement("br", null), "REFEI\xC7\xC3O")), l.id === "prosaude" && packPro && /*#__PURE__*/React.createElement("div", {
+      style: {
+        position: "relative",
+        border: "2px solid " + YEL,
+        borderRadius: 18,
+        background: "rgba(255,255,255,0.75)",
+        padding: "12px 14px",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 10
+      }
+    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        position: "relative",
+        display: "inline-block",
+        padding: "2px 18px 6px",
+        transform: "rotate(-2deg)"
+      }
+    }, /*#__PURE__*/React.createElement(Brush, {
+      seed: 19,
+      pow: 4,
+      n: 80,
+      color: YEL
+    }), /*#__PURE__*/React.createElement("span", {
+      style: {
+        position: "relative",
+        fontFamily: HAND,
+        fontWeight: 700,
+        fontSize: 28,
+        color: DEEP
+      }
+    }, "Seu Pack Pr\xF3-Sa\xFAde")), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12.5,
+        fontWeight: 700,
+        color: OLIVE,
+        marginTop: 6
+      }
+    }, "+ ", PACK_SIZE, " REFEI\xC7\xD5ES PR\xD3-SA\xDADE \xC0 SUA ESCOLHA")), /*#__PURE__*/React.createElement("div", {
+      style: {
+        position: "relative",
+        padding: "8px 26px 10px 20px",
+        color: "#fff",
+        transform: "rotate(-2deg)",
+        flexShrink: 0
+      }
+    }, /*#__PURE__*/React.createElement(Brush, {
+      seed: 27,
+      pow: 3.2,
+      n: 90,
+      color: OLIVE
+    }), /*#__PURE__*/React.createElement("span", {
+      style: {
+        position: "relative",
+        fontWeight: 800,
+        fontSize: 18,
+        verticalAlign: "top",
+        lineHeight: 2
+      }
+    }, "R$ "), /*#__PURE__*/React.createElement("span", {
+      style: {
+        position: "relative",
+        fontWeight: 800,
+        fontSize: 44,
+        lineHeight: 1
+      }
+    }, price(packPrices.prosaude).r), /*#__PURE__*/React.createElement("span", {
+      style: {
+        position: "relative",
+        fontWeight: 800,
+        fontSize: 20,
+        verticalAlign: "top",
+        lineHeight: 1.9
+      }
+    }, price(packPrices.prosaude).c))))));
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "relative",
+      margin: "18px 22px 0",
+      borderRadius: 22,
+      background: "linear-gradient(90deg," + ORG + "," + YEL + ")",
+      color: DEEP,
+      padding: "16px 28px",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontFamily: HAND,
+      fontWeight: 700,
+      fontSize: 32,
+      lineHeight: 1
+    }
+  }, "Fa\xE7a seu pedido agora!"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 600,
+      marginTop: 2
+    }
+  }, "Pe\xE7a pelo WhatsApp")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 12,
+      background: DEEP,
+      color: "#fff",
+      borderRadius: 999,
+      padding: "10px 26px"
+    }
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "phone",
+    size: 26,
+    color: "#fff"
+  }), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontWeight: 800,
+      fontSize: 30,
+      letterSpacing: "0.01em"
+    }
+  }, CONTACT.whatsapp))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "relative",
+      marginTop: 18,
+      background: DEEP,
+      padding: "20px 28px",
+      display: "flex",
+      gap: 22,
+      alignItems: "center"
+    }
+  }, info( /*#__PURE__*/React.createElement(Icon, {
+    name: "snowflake",
+    size: 28,
+    color: DEEP
+  }), "MARMITAS REFRIGERADAS", "Mantenha na geladeira e consuma em até 3 dias."), info( /*#__PURE__*/React.createElement(Icon, {
+    name: "flame",
+    size: 28,
+    color: DEEP
+  }), "PRÓPRIAS PARA FREEZER", "Congele por até 30 dias e aqueça com praticidade."), info( /*#__PURE__*/React.createElement(Icon, {
+    name: "packageCheck",
+    size: 28,
+    color: DEEP
+  }), "EMBALAGEM SEGURA", "Mais praticidade no seu dia a dia."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontFamily: HAND,
+      fontWeight: 700,
+      fontSize: 28,
+      lineHeight: 1.05,
+      color: "#fff",
+      textAlign: "center",
+      transform: "rotate(-4deg)",
+      flexShrink: 0,
+      width: 190
+    }
+  }, "Comida de verdade, todo dia!")))));
+}
 function MenuPricing({
   meals,
   setMeals,
@@ -5858,7 +6979,7 @@ function MenuPricing({
     showToast("Marmita adicionada ao cardápio.");
   };
   const activeMeals = meals.filter(m => m.active);
-  const shown = meals.filter(m => lineFilter === "todas" || inLine(m, lineFilter));
+  const shown = meals.filter(m => !m.gift && (lineFilter === "todas" || inLine(m, lineFilter)));
   const openForm = () => {
     if (!showForm && lineFilter !== "todas") setForm({
       ...form,
@@ -6346,6 +7467,7 @@ function MealRegistry({
   };
   const empty = {
     name: "",
+    gift: false,
     line: "tradicional",
     extraLines: [],
     category: "",
@@ -6368,6 +7490,7 @@ function MealRegistry({
   const startEdit = m => {
     setForm({
       name: m.name,
+      gift: !!m.gift,
       line: m.line,
       extraLines: m.extraLines || [],
       category: m.category || "",
@@ -6416,8 +7539,9 @@ function MealRegistry({
     }
     const data = {
       name: form.name.trim(),
-      line: form.line,
-      extraLines: form.extraLines.filter(x => x !== form.line),
+      gift: !!form.gift,
+      line: form.gift ? "tradicional" : form.line,
+      extraLines: form.gift ? [] : form.extraLines.filter(x => x !== form.line),
       category: form.category.trim(),
       size: form.size.trim(),
       desc: form.desc.trim(),
@@ -6432,13 +7556,17 @@ function MealRegistry({
         cost: 0,
         active: false
       }]);
-      showToast("Refeição cadastrada como rascunho. Defina o preço em Cardápio & Preços para publicar.");
+      showToast(data.gift ? "Brinde cadastrado. Cadastre a ficha técnica para ele entrar na Lista de compras." : "Refeição cadastrada como rascunho. Defina o preço em Cardápio & Preços para publicar.");
     } else {
       setMeals(prev => prev.map(m => m.id === editing ? {
         ...m,
-        ...data
+        ...data,
+        ...(data.gift ? {
+          active: false,
+          price: 0
+        } : {})
       } : m));
-      showToast("Refeição atualizada.");
+      showToast(data.gift ? "Brinde atualizado." : "Refeição atualizada.");
     }
     setEditing(null);
   };
@@ -6448,8 +7576,11 @@ function MealRegistry({
   }].concat(LINES.map(l => ({
     id: l.id,
     label: l.name
-  })));
-  const shown = meals.filter(m => filter === "todas" || inLine(m, filter));
+  }))).concat([{
+    id: "brinde",
+    label: "Brindes"
+  }]);
+  const shown = meals.filter(m => filter === "brinde" ? !!m.gift : filter === "todas" ? true : !m.gift && inLine(m, filter));
   return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(SectionTitle, {
     title: "Cadastro de Refei\xE7\xF5es",
     subtitle: "A nutricionista registra os ingredientes e a categoria de cada refei\xE7\xE3o.",
@@ -6475,17 +7606,46 @@ function MealRegistry({
     }
   }), editing && /*#__PURE__*/React.createElement("div", {
     style: {
-      ...card,
-      marginBottom: 20
+      ...overlayStyle,
+      alignItems: "flex-start",
+      overflowY: "auto",
+      padding: "28px 14px"
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
+      ...modalStyle,
+      maxWidth: 760,
+      margin: "0 auto",
+      maxHeight: "none",
+      overflowY: "visible"
+    },
+    onClick: e => e.stopPropagation()
+  }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: () => setEditing(null),
+    style: modalCloseBtn,
+    "aria-label": "Fechar"
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "x",
+    size: 16
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
       fontFamily: "Poppins, sans-serif",
       fontWeight: 700,
-      fontSize: 16,
-      marginBottom: 14
+      fontSize: 17,
+      marginBottom: 14,
+      paddingRight: 36
     }
-  }, editing === "new" ? "Nova refeição" : "Editar refeição"), /*#__PURE__*/React.createElement("div", {
+  }, editing === "new" ? form.gift ? "Novo brinde" : "Nova refeição" : "Editando o cadastro existente: " + ((meals.find(x => x.id === editing) || {}).name || "")), editing !== "new" && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12.5,
+      color: "#b85c1a",
+      background: "#fff4e8",
+      borderRadius: 8,
+      padding: "8px 12px",
+      marginBottom: 12
+    }
+  }, "Aten\xE7\xE3o: isto altera a refei\xE7\xE3o existente (nome, ingredientes, foto continuam nela). Para cadastrar uma nova, feche e use \u201CNova refei\xE7\xE3o\u201D."), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "grid",
       gridTemplateColumns: "repeat(3, 1fr)",
@@ -6498,14 +7658,46 @@ function MealRegistry({
     }
   }, /*#__PURE__*/React.createElement("label", {
     style: labelStyle
-  }, "Nome da refei\xE7\xE3o"), /*#__PURE__*/React.createElement("input", {
+  }, "Nome ", form.gift ? "do brinde" : "da refeição"), /*#__PURE__*/React.createElement("input", {
     style: inputStyle,
     value: form.name,
     onChange: e => setForm({
       ...form,
       name: e.target.value
     })
-  })), /*#__PURE__*/React.createElement("div", {
+  })), /*#__PURE__*/React.createElement("label", {
+    style: {
+      gridColumn: "1 / -1",
+      display: "flex",
+      alignItems: "flex-start",
+      gap: 10,
+      padding: "10px 12px",
+      borderRadius: 10,
+      border: "1px solid " + (form.gift ? "#e8833a" : "#dde3d8"),
+      background: form.gift ? "#fff4e8" : "#fff",
+      cursor: "pointer"
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    type: "checkbox",
+    style: {
+      marginTop: 3
+    },
+    checked: !!form.gift,
+    onChange: e => setForm({
+      ...form,
+      gift: e.target.checked
+    })
+  }), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 13.5,
+      lineHeight: 1.45
+    }
+  }, /*#__PURE__*/React.createElement("b", null, "\xC9 um brinde (item dado ao cliente)"), /*#__PURE__*/React.createElement("br", null), /*#__PURE__*/React.createElement("span", {
+    style: {
+      color: "#6f8072",
+      fontSize: 12.5
+    }
+  }, "Exemplo: potinho de feij\xE3o. N\xE3o \xE9 vendido, n\xE3o aparece no site nem em nenhuma linha, mas tem ficha t\xE9cnica e entra na soma da Lista de compras."))), !form.gift && /*#__PURE__*/React.createElement("div", {
     style: {
       gridColumn: "1 / -1"
     }
@@ -6546,7 +7738,7 @@ function MealRegistry({
       color: "#8a988c",
       marginTop: 6
     }
-  }, "Toda refei\xE7\xE3o publicada tamb\xE9m aparece em \"Monte o seu\".")), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+  }, "Toda refei\xE7\xE3o publicada tamb\xE9m aparece em \"Monte o seu\".")), !form.gift && /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
     style: labelStyle
   }, "Linha principal (categoria)"), /*#__PURE__*/React.createElement("select", {
     style: inputStyle,
@@ -6578,7 +7770,7 @@ function MealRegistry({
       ...form,
       size: e.target.value
     })
-  })), /*#__PURE__*/React.createElement("div", {
+  })), !form.gift && /*#__PURE__*/React.createElement("div", {
     style: {
       gridColumn: "1 / -1"
     }
@@ -6675,7 +7867,7 @@ function MealRegistry({
     type: "button",
     style: btnGhost,
     onClick: () => setEditing(null)
-  }, "Cancelar"))), /*#__PURE__*/React.createElement("div", {
+  }, "Cancelar")))), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 8,
@@ -6703,7 +7895,7 @@ function MealRegistry({
       color: "#6f8072",
       fontSize: 13.5
     }
-  }, "Nenhuma refei\xE7\xE3o nesta categoria ainda."), /*#__PURE__*/React.createElement("div", {
+  }, filter === "brinde" ? "Nenhum brinde cadastrado ainda. Use “Nova refeição” e marque “É um brinde”." : "Nenhuma refeição nesta categoria ainda."), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "grid",
       gridTemplateColumns: "repeat(2, 1fr)",
@@ -6712,20 +7904,47 @@ function MealRegistry({
     className: "lp-grid-3"
   }, shown.map(m => /*#__PURE__*/React.createElement("div", {
     key: m.id,
-    style: card
-  }, m.photo && /*#__PURE__*/React.createElement("img", {
+    style: {
+      ...card,
+      display: "flex",
+      gap: 16,
+      alignItems: "flex-start",
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 132,
+      height: 132,
+      flexShrink: 0,
+      borderRadius: 14,
+      background: "#f1f6ee",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      overflow: "hidden",
+      border: m.photo ? "none" : "1.5px dashed #cfe0cf",
+      color: "#9bb09d",
+      fontSize: 11.5,
+      fontWeight: 600,
+      textAlign: "center"
+    }
+  }, m.photo ? /*#__PURE__*/React.createElement("img", {
     src: m.photo,
     alt: m.name,
     loading: "lazy",
     style: {
       width: "100%",
-      height: 150,
+      height: "100%",
       objectFit: "cover",
-      borderRadius: 12,
-      marginBottom: 12,
-      background: "#f1f6ee"
+      objectPosition: "center",
+      display: "block"
     }
-  }), /*#__PURE__*/React.createElement("div", {
+  }) : "Sem foto"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: "1 1 260px",
+      minWidth: 0
+    }
+  }, /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       justifyContent: "space-between",
@@ -6736,11 +7955,11 @@ function MealRegistry({
     style: {
       fontSize: 10.5,
       fontWeight: 700,
-      color: "#8bc543",
+      color: m.gift ? "#e8833a" : "#8bc543",
       textTransform: "uppercase",
       letterSpacing: "0.04em"
     }
-  }, lineById(m.line).name, m.category ? " · " + m.category : ""), /*#__PURE__*/React.createElement("div", {
+  }, m.gift ? "Brinde" : lineById(m.line).name, m.category ? " · " + m.category : ""), /*#__PURE__*/React.createElement("div", {
     style: {
       fontFamily: "Poppins, sans-serif",
       fontWeight: 700,
@@ -6753,11 +7972,11 @@ function MealRegistry({
       fontWeight: 700,
       padding: "4px 9px",
       borderRadius: 999,
-      background: m.active ? "#eaf3ea" : "#fff4e8",
-      color: m.active ? "#1a4d2e" : "#b85c1a",
+      background: m.gift ? "#fff4e8" : m.active ? "#eaf3ea" : "#fff4e8",
+      color: m.gift ? "#e8833a" : m.active ? "#1a4d2e" : "#b85c1a",
       flexShrink: 0
     }
-  }, m.active ? "Visível no site" : m.price > 0 ? "Oculta" : "Rascunho")), /*#__PURE__*/React.createElement("div", {
+  }, m.gift ? "Não é vendido" : m.active ? "Visível no site" : m.price > 0 ? "Oculta" : "Rascunho")), /*#__PURE__*/React.createElement("div", {
     style: {
       marginTop: 12,
       fontSize: 12.5
@@ -6843,7 +8062,7 @@ function MealRegistry({
       color: m.active ? "#b85c1a" : "#1a4d2e",
       borderColor: m.active ? "#f0cfae" : "#cfe0cf"
     }
-  }, m.active ? "Ocultar do site" : "Mostrar no site"))))));
+  }, m.active ? "Ocultar do site" : "Mostrar no site")))))));
 }
 
 /* ============================== FICHA TÉCNICA & LISTA DE COMPRAS ============================== */
@@ -7113,16 +8332,431 @@ const PACKAGING = {
   perMarmita: 1
 };
 const SHOP_STATUS_DEFAULT = ["Pendente", "Encomendado", "Em preparo"];
+const PURCHASE_STATUS = ["A caminho", "Entregue", "Cancelado"];
+function Purchases({
+  stock,
+  setStock,
+  purchases,
+  setPurchases,
+  specs,
+  showToast
+}) {
+  const empty = {
+    name: "",
+    qty: "",
+    unit: "un",
+    total: "",
+    date: todayISO(),
+    note: ""
+  };
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState(empty);
+  const stockByName = {};
+  stock.forEach(x => {
+    stockByName[normName(x.name)] = x;
+  });
+  const names = (() => {
+    const set = {};
+    set[normName(PACKAGING.name)] = PACKAGING.name;
+    stock.forEach(x => {
+      set[normName(x.name)] = x.name;
+    });
+    Object.values(specs || {}).forEach(arr => (arr || []).forEach(i => {
+      if (i && i.name) set[normName(i.name)] = set[normName(i.name)] || i.name;
+    }));
+    return Object.values(set).sort((a, b) => a.localeCompare(b, "pt-BR"));
+  })();
+  const onName = v => {
+    const st = stockByName[normName(v)];
+    setForm(f => ({
+      ...f,
+      name: v,
+      unit: st ? st.unit : f.unit
+    }));
+  };
+  const submit = () => {
+    if (!form.name.trim()) {
+      showToast("Digite o que você comprou.");
+      return;
+    }
+    if (!(num(form.qty) > 0)) {
+      showToast("Digite a quantidade comprada.");
+      return;
+    }
+    setPurchases(prev => [{
+      id: newId(),
+      name: form.name.trim(),
+      qty: num(form.qty),
+      unit: form.unit.trim() || "un",
+      total: num(form.total),
+      status: "A caminho",
+      date: form.date || todayISO(),
+      receivedAt: null,
+      stockId: null,
+      note: form.note.trim()
+    }, ...prev]);
+    setForm(empty);
+    setOpen(false);
+    showToast("Compra registrada. Quando chegar, mude para Entregue.");
+  };
+  const deliver = p => {
+    const st = stockByName[normName(p.name)];
+    const sid = st ? st.id : newId();
+    if (st) {
+      setStock(prev => prev.map(x => x.id === st.id ? {
+        ...x,
+        qty: num(x.qty) + p.qty,
+        ...(p.total > 0 ? {
+          cost: p.total,
+          packQty: p.qty
+        } : {})
+      } : x));
+    } else {
+      setStock(prev => [...prev, {
+        id: sid,
+        name: p.name,
+        qty: p.qty,
+        min: 0,
+        unit: p.unit || "un",
+        cost: p.total,
+        packQty: p.qty > 0 ? p.qty : 1,
+        url: ""
+      }]);
+    }
+    setPurchases(prev => prev.map(x => x.id === p.id ? {
+      ...x,
+      status: "Entregue",
+      receivedAt: new Date().toISOString(),
+      stockId: sid
+    } : x));
+    showToast("Entregue! +" + p.qty + " " + p.unit + " de " + p.name + " no estoque.");
+  };
+  const undo = (p, next) => {
+    if (p.stockId) setStock(prev => prev.map(x => x.id === p.stockId ? {
+      ...x,
+      qty: Math.max(0, num(x.qty) - p.qty)
+    } : x));
+    setPurchases(prev => prev.map(x => x.id === p.id ? {
+      ...x,
+      status: next,
+      receivedAt: null
+    } : x));
+    showToast("Entrega desfeita: -" + p.qty + " " + p.unit + " de " + p.name + " no estoque.");
+  };
+  const changeStatus = (p, v) => {
+    if (v === p.status) return;
+    if (p.status === "Entregue") {
+      undo(p, v);
+      return;
+    }
+    if (v === "Entregue") {
+      deliver(p);
+      return;
+    }
+    setPurchases(prev => prev.map(x => x.id === p.id ? {
+      ...x,
+      status: v
+    } : x));
+  };
+  const remove = p => {
+    if (p.status === "Entregue") {
+      showToast("Desfaça a entrega antes de excluir (para o estoque não ficar errado).");
+      return;
+    }
+    setPurchases(prev => prev.filter(x => x.id !== p.id));
+  };
+  const pending = purchases.filter(p => p.status === "A caminho").length;
+  return /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...card,
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      gap: 12,
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontFamily: "Poppins, sans-serif",
+      fontWeight: 700,
+      fontSize: 15
+    }
+  }, "Minhas compras"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12.5,
+      color: "#6f8072",
+      marginTop: 2
+    }
+  }, "Registre o que comprou. Quando chegar, mude para ", /*#__PURE__*/React.createElement("b", null, "Entregue"), " e o estoque \xE9 atualizado sozinho.", pending ? " " + pending + " a caminho." : "")), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    style: btnPrimary,
+    onClick: () => setOpen(v => !v)
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "plus",
+    size: 14
+  }), " Registrar compra")), open && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 14,
+      display: "grid",
+      gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))",
+      gap: 12,
+      alignItems: "end"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      gridColumn: "span 2"
+    }
+  }, /*#__PURE__*/React.createElement("label", {
+    style: labelStyle
+  }, "O que comprou"), /*#__PURE__*/React.createElement("input", {
+    list: "f360-compra-itens",
+    style: inputStyle,
+    placeholder: "Ex.: Embalagem preta marmitex 500ml",
+    value: form.name,
+    onChange: e => onName(e.target.value)
+  }), /*#__PURE__*/React.createElement("datalist", {
+    id: "f360-compra-itens"
+  }, names.map(n => /*#__PURE__*/React.createElement("option", {
+    key: n,
+    value: n
+  })))), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    style: labelStyle
+  }, "Quantidade"), /*#__PURE__*/React.createElement("input", {
+    type: "number",
+    min: "0",
+    step: "0.01",
+    inputMode: "decimal",
+    style: inputStyle,
+    placeholder: "Ex.: 100",
+    value: form.qty,
+    onChange: e => setForm({
+      ...form,
+      qty: e.target.value
+    })
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    style: labelStyle
+  }, "Unidade"), /*#__PURE__*/React.createElement("input", {
+    style: inputStyle,
+    placeholder: "un, kg, g, L\u2026",
+    value: form.unit,
+    onChange: e => setForm({
+      ...form,
+      unit: e.target.value
+    })
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    style: labelStyle
+  }, "Valor total pago (R$, opcional)"), /*#__PURE__*/React.createElement("input", {
+    type: "number",
+    min: "0",
+    step: "0.01",
+    inputMode: "decimal",
+    style: inputStyle,
+    value: form.total,
+    onChange: e => setForm({
+      ...form,
+      total: e.target.value
+    })
+  })), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
+    style: labelStyle
+  }, "Data da compra"), /*#__PURE__*/React.createElement("input", {
+    type: "date",
+    style: inputStyle,
+    value: form.date,
+    onChange: e => setForm({
+      ...form,
+      date: e.target.value
+    })
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      gridColumn: "span 2"
+    }
+  }, /*#__PURE__*/React.createElement("label", {
+    style: labelStyle
+  }, "Observa\xE7\xE3o (opcional)"), /*#__PURE__*/React.createElement("input", {
+    style: inputStyle,
+    placeholder: "Fornecedor, link, n\xBA do pedido\u2026",
+    value: form.note,
+    onChange: e => setForm({
+      ...form,
+      note: e.target.value
+    })
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    style: btnPrimary,
+    onClick: submit
+  }, "Salvar compra"), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    style: btnGhost,
+    onClick: () => {
+      setOpen(false);
+      setForm(empty);
+    }
+  }, "Cancelar"))), purchases.length > 0 && /*#__PURE__*/React.createElement("div", {
+    className: "table-scroll",
+    style: {
+      marginTop: 14
+    }
+  }, /*#__PURE__*/React.createElement("table", {
+    style: {
+      width: "100%",
+      borderCollapse: "collapse",
+      fontSize: 13.5
+    }
+  }, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", {
+    style: {
+      textAlign: "left",
+      color: "#6f8072",
+      fontSize: 12
+    }
+  }, /*#__PURE__*/React.createElement("th", {
+    style: {
+      padding: "8px 10px"
+    }
+  }, "Data"), /*#__PURE__*/React.createElement("th", {
+    style: {
+      padding: "8px 10px"
+    }
+  }, "Item"), /*#__PURE__*/React.createElement("th", {
+    style: {
+      padding: "8px 10px"
+    }
+  }, "Quantidade"), /*#__PURE__*/React.createElement("th", {
+    style: {
+      padding: "8px 10px"
+    }
+  }, "Valor"), /*#__PURE__*/React.createElement("th", {
+    style: {
+      padding: "8px 10px"
+    }
+  }, "No estoque"), /*#__PURE__*/React.createElement("th", {
+    style: {
+      padding: "8px 10px"
+    }
+  }, "Status"), /*#__PURE__*/React.createElement("th", {
+    style: {
+      padding: "8px 10px"
+    }
+  }))), /*#__PURE__*/React.createElement("tbody", null, purchases.map(p => {
+    const st = stock.find(x => x.id === p.stockId) || stockByName[normName(p.name)];
+    return /*#__PURE__*/React.createElement("tr", {
+      key: p.id,
+      style: {
+        borderTop: "1px solid #eef1ea"
+      }
+    }, /*#__PURE__*/React.createElement("td", {
+      style: {
+        padding: "9px 10px",
+        whiteSpace: "nowrap"
+      }
+    }, fmtDate(p.date)), /*#__PURE__*/React.createElement("td", {
+      style: {
+        padding: "9px 10px",
+        fontWeight: 600
+      }
+    }, p.name, p.note ? /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontWeight: 400,
+        fontSize: 11.5,
+        color: "#6f8072"
+      }
+    }, p.note) : null), /*#__PURE__*/React.createElement("td", {
+      style: {
+        padding: "9px 10px",
+        whiteSpace: "nowrap"
+      }
+    }, p.qty, " ", p.unit), /*#__PURE__*/React.createElement("td", {
+      style: {
+        padding: "9px 10px",
+        whiteSpace: "nowrap"
+      }
+    }, p.total > 0 ? fmt(p.total) : "—"), /*#__PURE__*/React.createElement("td", {
+      style: {
+        padding: "9px 10px",
+        whiteSpace: "nowrap",
+        color: "#6f8072"
+      }
+    }, st ? st.qty + " " + st.unit : "—"), /*#__PURE__*/React.createElement("td", {
+      style: {
+        padding: "9px 10px"
+      }
+    }, /*#__PURE__*/React.createElement("select", {
+      value: p.status,
+      onChange: e => changeStatus(p, e.target.value),
+      style: {
+        ...inputStyle,
+        width: "auto",
+        padding: "6px 10px",
+        fontWeight: 600,
+        color: p.status === "Entregue" ? "#1a4d2e" : p.status === "Cancelado" ? "#d6483f" : "#b85c1a",
+        background: p.status === "Entregue" ? "#eaf3ea" : p.status === "Cancelado" ? "#fdeeed" : "#fff4e8"
+      }
+    }, PURCHASE_STATUS.map(x => /*#__PURE__*/React.createElement("option", {
+      key: x,
+      value: x
+    }, x)))), /*#__PURE__*/React.createElement("td", {
+      style: {
+        padding: "9px 10px"
+      }
+    }, /*#__PURE__*/React.createElement("button", {
+      type: "button",
+      style: {
+        ...btnGhost,
+        padding: "6px 11px",
+        fontSize: 12,
+        color: "#d6483f",
+        borderColor: "#f0cfcb",
+        opacity: p.status === "Entregue" ? 0.45 : 1
+      },
+      onClick: () => remove(p)
+    }, "Excluir")));
+  })))));
+}
 function ShoppingList({
   orders,
   meals,
   specs,
+  stock,
+  setStock,
+  purchases,
+  setPurchases,
   showToast
 }) {
   const [statuses, setStatuses] = useState(SHOP_STATUS_DEFAULT);
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [done, setDone] = useState({});
+  const gifts = meals.filter(m => m.gift);
+  const [giftQty, setGiftQty] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem("f360_gift_qty") || "{}") || {};
+    } catch (e) {
+      return {};
+    }
+  });
+  const setGQ = (id, v) => setGiftQty(cur => {
+    const n = {
+      ...cur,
+      [id]: v
+    };
+    try {
+      localStorage.setItem("f360_gift_qty", JSON.stringify(n));
+    } catch (e) {}
+    return n;
+  });
+  const giftList = gifts.map(g => ({
+    meal: g,
+    name: g.name,
+    qty: Math.max(0, parseInt(giftQty[g.id], 10) || 0)
+  })).filter(g => g.qty > 0);
   const toggle = st => setStatuses(cur => cur.includes(st) ? cur.filter(x => x !== st) : cur.concat(st));
   const chosen = orders.filter(o => statuses.includes(o.status) && (!from || String(o.date) >= from) && (!to || String(o.date) <= to));
   const mealByName = {};
@@ -7143,9 +8777,15 @@ function ShoppingList({
   }));
   const dishList = Object.values(dishes).sort((a, b) => b.qty - a.qty);
   const totalMarmitas = dishList.reduce((s, d) => s + d.qty, 0);
-  const missing = dishList.filter(d => !d.meal || !(specs[d.meal.id] || []).length);
+  const missing = dishList.concat(giftList.map(g => ({
+    ...g,
+    name: g.name + " (brinde)"
+  }))).filter(d => !d.meal || !(specs[d.meal.id] || []).length);
   const agg = {};
-  dishList.forEach(d => {
+  dishList.concat(giftList.map(g => ({
+    ...g,
+    name: g.name + " (brinde)"
+  }))).forEach(d => {
     if (!d.meal) return;
     (specs[d.meal.id] || []).forEach(ing => {
       const u = UNITS[ing.unit] || UNITS.g;
@@ -7183,7 +8823,12 @@ function ShoppingList({
     });
   }
   const lines = Object.values(agg).sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
-  const asText = () => "Lista de compras — 360 Food\n" + lines.map(l => `- ${l.name}: ${fmtAmount(l.base, l.fam)}`).join("\n");
+  const low = (stock || []).filter(s => num(s.min) > 0 && num(s.qty) < num(s.min)).map(s => ({
+    ...s,
+    falta: num(s.min) - num(s.qty)
+  })).sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
+  const fmtQ = n => String(Math.round(n * 100) / 100).replace(".", ",");
+  const asText = () => "Lista de compras — 360 Food\n" + lines.map(l => `- ${l.name}: ${fmtAmount(l.base, l.fam)}`).join("\n") + (low.length ? "\n\nRepor estoque (abaixo do mínimo)\n" + low.map(l => `- ${l.name}: faltam ${fmtQ(l.falta)} ${l.unit}`).join("\n") : "");
   const copy = async () => {
     const t = asText();
     try {
@@ -7204,7 +8849,7 @@ function ShoppingList({
     }
   };
   const csv = () => {
-    const rows = [["Ingrediente", "Quantidade", "Usado em"]].concat(lines.map(l => [l.name, fmtAmount(l.base, l.fam), l.uses.map(u => u.qty + "x " + u.dish).join("; ")]));
+    const rows = [["Ingrediente", "Quantidade", "Usado em"]].concat(lines.map(l => [l.name, fmtAmount(l.base, l.fam), l.uses.map(u => u.qty + "x " + u.dish).join("; ")])).concat(low.map(l => [l.name, fmtQ(l.falta) + " " + l.unit, "Repor estoque (tem " + fmtQ(num(l.qty)) + ", mínimo " + fmtQ(num(l.min)) + ")"]));
     const text = "﻿" + rows.map(r => r.map(c => '"' + String(c).replace(/"/g, '""') + '"').join(";")).join("\n");
     try {
       const a = document.createElement("a");
@@ -7231,13 +8876,20 @@ function ShoppingList({
       type: "button",
       style: btnGhost,
       onClick: copy,
-      disabled: !lines.length
+      disabled: !lines.length && !low.length
     }, "Copiar lista"), /*#__PURE__*/React.createElement("button", {
       type: "button",
       style: btnPrimary,
       onClick: csv,
-      disabled: !lines.length
+      disabled: !lines.length && !low.length
     }, "Baixar CSV"))
+  }), /*#__PURE__*/React.createElement(Purchases, {
+    stock: stock,
+    setStock: setStock,
+    purchases: purchases,
+    setPurchases: setPurchases,
+    specs: specs,
+    showToast: showToast
   }), /*#__PURE__*/React.createElement("div", {
     style: {
       ...card,
@@ -7311,7 +8963,80 @@ function ShoppingList({
       color: "#526355",
       fontWeight: 600
     }
-  }, chosen.length, " ", chosen.length === 1 ? "pedido" : "pedidos", " \xB7 ", totalMarmitas, " ", totalMarmitas === 1 ? "marmita" : "marmitas"))), missing.length > 0 && /*#__PURE__*/React.createElement("div", {
+  }, chosen.length, " ", chosen.length === 1 ? "pedido" : "pedidos", " \xB7 ", totalMarmitas, " ", totalMarmitas === 1 ? "marmita" : "marmitas"))), low.length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...card,
+      marginBottom: 16,
+      borderColor: "#f0cfae"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      marginBottom: 4
+    }
+  }, "Repor estoque \xB7 abaixo do m\xEDnimo (", low.length, ")"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12.5,
+      color: "#6f8072",
+      marginBottom: 10
+    }
+  }, "Itens do Estoque com quantidade menor que o m\xEDnimo. \u201CFalta\u201D \xE9 o que falta para chegar no m\xEDnimo."), /*#__PURE__*/React.createElement("div", {
+    className: "table-scroll"
+  }, /*#__PURE__*/React.createElement("table", null, /*#__PURE__*/React.createElement("thead", null, /*#__PURE__*/React.createElement("tr", null, /*#__PURE__*/React.createElement("th", null, "Item"), /*#__PURE__*/React.createElement("th", null, "Tem"), /*#__PURE__*/React.createElement("th", null, "M\xEDnimo"), /*#__PURE__*/React.createElement("th", null, "Falta"))), /*#__PURE__*/React.createElement("tbody", null, low.map(l => /*#__PURE__*/React.createElement("tr", {
+    key: l.id
+  }, /*#__PURE__*/React.createElement("td", {
+    style: {
+      fontWeight: 600
+    }
+  }, l.name), /*#__PURE__*/React.createElement("td", {
+    style: {
+      color: "#d6483f",
+      fontWeight: 700
+    }
+  }, fmtQ(num(l.qty)), " ", l.unit), /*#__PURE__*/React.createElement("td", null, fmtQ(num(l.min)), " ", l.unit), /*#__PURE__*/React.createElement("td", {
+    style: {
+      fontWeight: 700
+    }
+  }, fmtQ(l.falta), " ", l.unit))))))), gifts.length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...card,
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13,
+      fontWeight: 700,
+      marginBottom: 4
+    }
+  }, "Brindes que v\xE3o sair neste per\xEDodo"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12.5,
+      color: "#6f8072",
+      marginBottom: 10
+    }
+  }, "Informe quantas unidades de cada brinde voc\xEA vai dar. Os insumos deles entram na soma da lista abaixo."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 14,
+      flexWrap: "wrap"
+    }
+  }, gifts.map(g => /*#__PURE__*/React.createElement("div", {
+    key: g.id
+  }, /*#__PURE__*/React.createElement("label", {
+    style: labelStyle
+  }, g.name), /*#__PURE__*/React.createElement("input", {
+    type: "number",
+    min: "0",
+    step: "1",
+    style: {
+      ...inputStyle,
+      width: 120
+    },
+    placeholder: "0",
+    value: giftQty[g.id] || "",
+    onChange: e => setGQ(g.id, e.target.value)
+  }))))), missing.length > 0 && /*#__PURE__*/React.createElement("div", {
     style: {
       background: "#fff4e8",
       border: "1px solid #f0cfae",
@@ -7324,7 +9049,7 @@ function ShoppingList({
     }
   }, /*#__PURE__*/React.createElement("b", null, "Sem ficha t\xE9cnica (n\xE3o entram na soma):"), " ", missing.map(d => `${d.name} (${d.qty})`).join(", "), ". Cadastre em Refei\xE7\xF5es > Ficha t\xE9cnica."), /*#__PURE__*/React.createElement("div", {
     style: card
-  }, chosen.length === 0 ? /*#__PURE__*/React.createElement("p", {
+  }, chosen.length === 0 && giftList.length === 0 ? /*#__PURE__*/React.createElement("p", {
     style: {
       fontSize: 14,
       color: "#6f8072",
