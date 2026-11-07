@@ -479,6 +479,10 @@ function Icon({
       }), /*#__PURE__*/React.createElement("path", {
         d: "M9 8V6a3 3 0 0 1 6 0v2"
       }));
+    case "flame":
+      return /*#__PURE__*/React.createElement("svg", c, /*#__PURE__*/React.createElement("path", {
+        d: "M12 3c1 3.5 5 5.5 5 10a5 5 0 0 1-10 0c0-2 1-3.2 2-4.2.2 1.4.9 2.2 1.8 2.6C10.3 8.5 10.8 5.5 12 3z"
+      }));
     case "utensils":
       return /*#__PURE__*/React.createElement("svg", c, /*#__PURE__*/React.createElement("path", {
         d: "M6 3v7a2 2 0 0 0 2 2h0a2 2 0 0 0 2-2V3"
@@ -1610,6 +1614,10 @@ const NAV = [{
   label: "Pedidos",
   icon: "bag"
 }, {
+  id: "kitchen",
+  label: "Cozinha",
+  icon: "flame"
+}, {
   id: "recipes",
   label: "Refeições",
   icon: "leaf"
@@ -2550,6 +2558,11 @@ function App() {
     setOrders: setOrders,
     cycleStatus: cycleStatus,
     showToast: showToast
+  }), view === "kitchen" && /*#__PURE__*/React.createElement(KitchenBoard, {
+    orders: orders,
+    meals: meals,
+    specs: specs,
+    cycleStatus: cycleStatus
   }), view === "recipes" && /*#__PURE__*/React.createElement(MealRegistry, {
     meals: meals,
     setMeals: setMeals,
@@ -8529,6 +8542,331 @@ const PACKAGING = {
   name: "Embalagem preta marmitex 500ml",
   perMarmita: 1
 };
+const KITCHEN_STATUSES = ["Pendente", "Encomendado", "Em preparo"];
+const KITCHEN_ACTION = {
+  Pendente: "Iniciar preparo",
+  Encomendado: "Iniciar preparo",
+  "Em preparo": "Pronto · congelar"
+};
+function KitchenBoard({
+  orders,
+  meals,
+  specs,
+  cycleStatus
+}) {
+  const [sel, setSel] = useState(["Encomendado", "Em preparo"]);
+  const [open, setOpen] = useState({});
+  const [done, setDone] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem("f360_kitchen_done") || "{}") || {};
+    } catch (e) {
+      return {};
+    }
+  });
+  const mark = k => setDone(cur => {
+    const n = {
+      ...cur,
+      [k]: !cur[k]
+    };
+    try {
+      localStorage.setItem("f360_kitchen_done", JSON.stringify(n));
+    } catch (e) {}
+    return n;
+  });
+  const clearMarks = () => {
+    setDone({});
+    try {
+      localStorage.removeItem("f360_kitchen_done");
+    } catch (e) {}
+  };
+  const toggle = st => setSel(cur => cur.includes(st) ? cur.filter(x => x !== st) : [...cur, st]);
+  const mealByName = {};
+  meals.forEach(m => {
+    mealByName[normName(m.name)] = m;
+  });
+  const find = i => i.mealId && meals.find(x => x.id === i.mealId) || i.meal_id && meals.find(x => x.id === i.meal_id) || mealByName[normName(i.name)];
+  const chosen = orders.filter(o => sel.includes(o.status));
+  const dishes = {};
+  chosen.forEach(o => (o.items || []).forEach(i => {
+    const m = find(i);
+    const key = m ? m.id : "x:" + normName(i.name);
+    if (!dishes[key]) dishes[key] = {
+      key,
+      meal: m,
+      name: m ? m.name : i.name,
+      qty: 0,
+      by: {}
+    };
+    dishes[key].qty += i.qty;
+    dishes[key].by[o.status] = (dishes[key].by[o.status] || 0) + i.qty;
+  }));
+  const dishList = Object.values(dishes).sort((a, b) => b.qty - a.qty || a.name.localeCompare(b.name, "pt-BR"));
+  const total = dishList.reduce((t, d) => t + d.qty, 0);
+  const order = {
+    "Em preparo": 0,
+    Encomendado: 1,
+    Pendente: 2
+  };
+  const orderList = chosen.slice().sort((a, b) => order[a.status] - order[b.status] || String(a.date).localeCompare(String(b.date)));
+  const text = () => "Cozinha — 360 Food\n" + dishList.map(d => d.qty + "x " + d.name).join("\n") + "\n\nTotal: " + total + " marmitas";
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text());
+    } catch (e) {}
+  };
+  const ingredients = d => {
+    const list = d.meal ? specs[d.meal.id] || [] : [];
+    if (!list.length) return /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 13,
+        color: "#b85c1a"
+      }
+    }, "Ficha t\xE9cnica ainda n\xE3o cadastrada para esta refei\xE7\xE3o.");
+    return /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fill,minmax(210px,1fr))",
+        gap: "4px 18px",
+        marginTop: 6
+      }
+    }, list.map((ing, k) => {
+      const u = UNITS[ing.unit] || UNITS.g;
+      return /*#__PURE__*/React.createElement("div", {
+        key: k,
+        style: {
+          fontSize: 14,
+          display: "flex",
+          justifyContent: "space-between",
+          gap: 10,
+          borderBottom: "1px dashed #e4e8df",
+          padding: "3px 0"
+        }
+      }, /*#__PURE__*/React.createElement("span", null, ing.name), /*#__PURE__*/React.createElement("b", null, fmtAmount(ing.qty * u.f * d.qty, u.fam)));
+    }));
+  };
+  return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(SectionTitle, {
+    title: "Cozinha",
+    subtitle: "O que precisa ser feito agora, somando todos os pedidos escolhidos.",
+    action: /*#__PURE__*/React.createElement("button", {
+      type: "button",
+      style: btnGhost,
+      onClick: copy,
+      disabled: !dishList.length
+    }, "Copiar lista")
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      flexWrap: "wrap",
+      marginBottom: 16
+    }
+  }, KITCHEN_STATUSES.map(st => /*#__PURE__*/React.createElement("button", {
+    key: st,
+    type: "button",
+    onClick: () => toggle(st),
+    style: {
+      padding: "8px 14px",
+      borderRadius: 999,
+      fontSize: 13.5,
+      fontWeight: 700,
+      cursor: "pointer",
+      border: "1.5px solid " + (sel.includes(st) ? statusColor[st] : "#dde3d8"),
+      background: sel.includes(st) ? statusColor[st] : "#fff",
+      color: sel.includes(st) ? "#fff" : "#526355"
+    }
+  }, st, " (", orders.filter(o => o.status === st).length, ")"))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...card,
+      marginBottom: 18
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "baseline",
+      flexWrap: "wrap",
+      gap: 8,
+      marginBottom: 12
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontFamily: "Poppins, sans-serif",
+      fontWeight: 700,
+      fontSize: 18
+    }
+  }, "Fazer agora"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14,
+      color: "#526355"
+    }
+  }, total, " ", total === 1 ? "marmita" : "marmitas", " em ", dishList.length, " ", dishList.length === 1 ? "refeição" : "refeições", Object.keys(done).some(k => done[k]) && /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: clearMarks,
+    style: {
+      marginLeft: 12,
+      background: "none",
+      border: "none",
+      color: "#2f6fb3",
+      cursor: "pointer",
+      fontSize: 13
+    }
+  }, "Limpar marca\xE7\xF5es"))), dishList.length === 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14.5,
+      color: "#6f8072",
+      padding: "10px 0"
+    }
+  }, "Nenhum pedido nos status escolhidos. Quando entrar um pedido Encomendado ou Em preparo, ele aparece aqui."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(auto-fill,minmax(340px,1fr))",
+      gap: 12
+    }
+  }, dishList.map(d => /*#__PURE__*/React.createElement("div", {
+    key: d.key,
+    style: {
+      border: "1.5px solid " + (done[d.key] ? "#cfe6cf" : "#e4e8df"),
+      background: done[d.key] ? "#f2f9f2" : "#fff",
+      borderRadius: 14,
+      padding: 14,
+      opacity: done[d.key] ? 0.7 : 1
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 14,
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontFamily: "Poppins, sans-serif",
+      fontWeight: 800,
+      fontSize: 38,
+      lineHeight: 1,
+      color: "#1a4d2e",
+      minWidth: 64
+    }
+  }, d.qty, "\xD7"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1,
+      minWidth: 0
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 700,
+      fontSize: 17,
+      lineHeight: 1.25,
+      textDecoration: done[d.key] ? "line-through" : "none"
+    }
+  }, d.name), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: "#6f8072",
+      marginTop: 3
+    }
+  }, d.meal ? lineById(d.meal.line).name : "Refeição fora do cadastro", Object.keys(d.by).length > 1 || sel.length > 1 ? " · " + ["Em preparo", "Encomendado", "Pendente"].filter(st => d.by[st]).map(st => d.by[st] + " " + st.toLowerCase()).join(", ") : "")), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: () => mark(d.key),
+    "aria-label": "Marcar como feito",
+    style: {
+      width: 40,
+      height: 40,
+      borderRadius: 12,
+      border: "2px solid " + (done[d.key] ? "#4a9a5a" : "#cfd8cb"),
+      background: done[d.key] ? "#4a9a5a" : "#fff",
+      color: "#fff",
+      cursor: "pointer",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      flexShrink: 0
+    }
+  }, done[d.key] && /*#__PURE__*/React.createElement(Icon, {
+    name: "check",
+    size: 20,
+    strokeWidth: 3
+  }))), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: () => setOpen(c => ({
+      ...c,
+      [d.key]: !c[d.key]
+    })),
+    style: {
+      marginTop: 8,
+      background: "none",
+      border: "none",
+      color: "#2f6fb3",
+      cursor: "pointer",
+      fontSize: 13,
+      padding: 0
+    }
+  }, open[d.key] ? "Esconder ingredientes" : "Ver ingredientes para " + d.qty), open[d.key] && ingredients(d))))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...card
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontFamily: "Poppins, sans-serif",
+      fontWeight: 700,
+      fontSize: 18,
+      marginBottom: 12
+    }
+  }, "Pedidos (", orderList.length, ")"), orderList.length === 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 14.5,
+      color: "#6f8072"
+    }
+  }, "Nenhum pedido nos status escolhidos."), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "repeat(auto-fill,minmax(300px,1fr))",
+      gap: 12
+    }
+  }, orderList.map(o => /*#__PURE__*/React.createElement("div", {
+    key: o.id,
+    style: {
+      border: "1px solid #e4e8df",
+      borderLeft: "5px solid " + (statusColor[o.status] || "#999"),
+      borderRadius: 12,
+      padding: 12
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      gap: 8,
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontWeight: 700,
+      fontSize: 15
+    }
+  }, o.number ? "#" + o.number + " · " : "", o.client), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11,
+      fontWeight: 700,
+      color: statusColor[o.status],
+      whiteSpace: "nowrap"
+    }
+  }, o.status)), /*#__PURE__*/React.createElement("div", {
+    style: {
+      margin: "8px 0",
+      fontSize: 14.5,
+      lineHeight: 1.5
+    }
+  }, (o.items || []).map((i, k) => /*#__PURE__*/React.createElement("div", {
+    key: k
+  }, /*#__PURE__*/React.createElement("b", null, i.qty, "\xD7"), " ", i.name))), KITCHEN_ACTION[o.status] && /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    style: {
+      ...btnPrimary,
+      padding: "8px 12px",
+      fontSize: 13
+    },
+    onClick: () => cycleStatus(o.id)
+  }, KITCHEN_ACTION[o.status]))))));
+}
 const SHOP_STATUS_DEFAULT = ["Pendente", "Encomendado", "Em preparo"];
 const PURCHASE_STATUS = ["A caminho", "Entregue", "Cancelado"];
 function Purchases({
