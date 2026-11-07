@@ -941,6 +941,12 @@ const LINES = [{
   tone: "lime",
   desc: "Itens especiais, vendidos separadamente. Não fazem parte do pack."
 }, {
+  id: "caldos",
+  name: "Caldos",
+  icon: "flame",
+  tone: "orange",
+  desc: "Caldos e sopas de 350 ml."
+}, {
   id: "prosaude",
   name: "Linha Pró-Saúde",
   icon: "shield",
@@ -981,10 +987,17 @@ const PACKS = [{
   name: "Pack Pró-Saúde",
   defaultPrice: 119.0,
   note: ""
+}, {
+  id: "caldos",
+  line: "caldos",
+  name: "Pack Caldos",
+  defaultPrice: 105.0,
+  note: ""
 }];
 const DEFAULT_PACK_PRICES = {
   tradicional: 0,
-  prosaude: 0
+  prosaude: 0,
+  caldos: 0
 };
 const mealsOfLine = (meals, lineId) => meals.filter(m => m.active && inLine(m, lineId));
 const packsAvailable = meals => PACKS.filter(pk => mealsOfLine(meals, pk.line).length >= PACK_SIZE);
@@ -1581,7 +1594,7 @@ const makeFaqs = (prices, visible) => {
   const has = id => visible.some(l => l.id === id);
   return [{
     q: "Como funcionam os packs?",
-    a: `Você escolhe 5 sabores diferentes da linha. O Pack Semanal (Linha Tradicional) custa ${fmt(prices.tradicional)} e o Pack Pró-Saúde custa ${fmt(prices.prosaude)}.`
+    a: `Você escolhe 5 sabores diferentes da linha. O Pack Semanal (Linha Tradicional) custa ${fmt(prices.tradicional)} e o Pack Pró-Saúde custa ${fmt(prices.prosaude)}.${has("caldos") && prices.caldos > 0 ? ` O Pack Caldos (5 caldos de 350 ml à sua escolha) custa ${fmt(prices.caldos)}.` : ""}`
   }, {
     q: "O feijão está incluído?",
     a: "No Pack Semanal vão 2 porções de feijão carioca de 120 ml cada. O feijão acompanha o pack e não é vendido separadamente."
@@ -3048,6 +3061,7 @@ function OrderWizard({
   const [step, setStep] = useState(startPack ? "pack" : start === "escolher" ? "escolher" : "inicio");
   const [packId, setPackId] = useState(startPack);
   const [sel, setSel] = useState([]);
+  const [packN, setPackN] = useState(1);
   const [cart, setCart] = useState({});
   const [note, setNote] = useState("");
   const [only, setOnly] = useState(line || null);
@@ -3233,6 +3247,7 @@ function OrderWizard({
   }, packs.map((pk, i) => optionBtn("packageCheck", pk.name, `Escolha ${PACK_SIZE} sabores diferentes · ${fmt(packPrices[pk.id])}`, () => {
     setPackId(pk.id);
     setSel([]);
+    setPackN(1);
     setStep("pack");
   }, i === 0)), optionBtn("utensils", "Escolher as minhas", "Você escolhe os pratos e a quantidade", () => {
     setOnly(null);
@@ -3327,7 +3342,70 @@ function OrderWizard({
       fontSize: 18,
       fontWeight: 700
     }
-  }, /*#__PURE__*/React.createElement("span", null, sel.length === PACK_SIZE ? `${PACK_SIZE} sabores escolhidos ✓` : `Escolhidos: ${sel.length} de ${PACK_SIZE}`), /*#__PURE__*/React.createElement("span", null, fmt(packPrice))), /*#__PURE__*/React.createElement("button", {
+  }, /*#__PURE__*/React.createElement("span", null, sel.length === PACK_SIZE ? `${PACK_SIZE} sabores escolhidos ✓` : `Escolhidos: ${sel.length} de ${PACK_SIZE}`), /*#__PURE__*/React.createElement("span", null, fmt(packPrice * packN))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: 12,
+      background: "#f6f8f2",
+      borderRadius: 14,
+      padding: "10px 16px",
+      marginBottom: 12
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 17,
+      fontWeight: 700,
+      color: "#16331f"
+    }
+  }, "Quantos packs iguais?"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 12
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    "aria-label": "Tirar um pack",
+    onClick: () => setPackN(n => Math.max(1, n - 1)),
+    disabled: packN <= 1,
+    style: {
+      width: 48,
+      height: 48,
+      borderRadius: 14,
+      border: "2px solid #cfd8cb",
+      background: "#fff",
+      fontSize: 26,
+      fontWeight: 700,
+      color: "#1a4d2e",
+      opacity: packN <= 1 ? 0.4 : 1,
+      cursor: packN <= 1 ? "default" : "pointer"
+    }
+  }, "\u2212"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontWeight: 800,
+      fontSize: 24,
+      minWidth: 28,
+      textAlign: "center"
+    }
+  }, packN), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    "aria-label": "Colocar mais um pack",
+    onClick: () => setPackN(n => Math.min(10, n + 1)),
+    disabled: packN >= 10,
+    style: {
+      width: 48,
+      height: 48,
+      borderRadius: 14,
+      border: "none",
+      background: "#1a4d2e",
+      color: "#fff",
+      fontSize: 26,
+      fontWeight: 700,
+      cursor: "pointer"
+    }
+  }, "+"))), /*#__PURE__*/React.createElement("button", {
     className: "lp-btn",
     disabled: sel.length !== PACK_SIZE,
     style: {
@@ -3335,14 +3413,14 @@ function OrderWizard({
       background: "#e8833a"
     },
     onClick: () => goData({
-      kind: pack.name,
+      kind: pack.name + (packN > 1 ? " ×" + packN : ""),
       packId: pack.id,
       items: sel.map(id => ({
         mealId: id,
         name: meals.find(m => m.id === id).name,
-        qty: 1
+        qty: packN
       })),
-      total: packPrice
+      total: packPrice * packN
     })
   }, "Continuar ", /*#__PURE__*/React.createElement(Icon, {
     name: "arrowRight",
@@ -6326,7 +6404,7 @@ function FolderPage({
       localStorage.setItem("f360_folder_sel", JSON.stringify(n));
     } catch (e) {}
   };
-  const ORDER = ["tradicional", "prosaude", "baby", "especial"];
+  const ORDER = ["tradicional", "prosaude", "caldos", "baby", "especial"];
   const lines = ORDER.map(id => LINES.find(l => l.id === id)).filter(l => l && meals.some(m => m.active && inLine(m, l.id)));
   const itemsOf = l => meals.filter(m => m.active && inLine(m, l.id));
   const photoOf = l => {
@@ -6355,6 +6433,12 @@ function FolderPage({
       tagColor: "#3e5a1c",
       word: "PRÓ-SAÚDE",
       note: "Pensada para quem tem diabetes, hipertensão e busca uma alimentação mais equilibrada. Não substitui orientação médica."
+    },
+    caldos: {
+      brush: "#a8541a",
+      tag: "Caldos e sopas de 350 ml.",
+      tagColor: "#a8541a",
+      word: "CALDOS"
     },
     baby: {
       brush: ORG,
@@ -6522,6 +6606,7 @@ function FolderPage({
   })();
   const packTrad = PACKS[0] && num(packPrices.tradicional) > 0 ? PACKS[0] : null;
   const packPro = PACKS[1] && num(packPrices.prosaude) > 0 ? PACKS[1] : null;
+  const packCal = PACKS[2] && num(packPrices.caldos) > 0 ? PACKS[2] : null;
   const feijao = packTrad && /feijão/i.test(packTrad.note || "");
   const info = (icon, t1, t2) => /*#__PURE__*/React.createElement("div", {
     style: {
@@ -6761,7 +6846,7 @@ function FolderPage({
     const photo = photoOf(l);
     const isTrad = l.id === "tradicional";
     const its = itemsOf(l);
-    if (its.length <= 3 && l.id !== "tradicional" && l.id !== "prosaude") {
+    if (its.length <= 3 && l.id !== "tradicional" && l.id !== "prosaude" && l.id !== "caldos") {
       // poucas refeições, sem pack: faixa compacta com um cartão por refeição
       return /*#__PURE__*/React.createElement("div", {
         key: l.id,
@@ -7028,7 +7113,7 @@ function FolderPage({
         flexDirection: "column",
         gap: 12
       }
-    }, photoBox(photo, 400), l.id === "prosaude" && /*#__PURE__*/React.createElement("div", {
+    }, (l.id !== "caldos" || photo) && photoBox(photo, 400), l.id === "prosaude" && /*#__PURE__*/React.createElement("div", {
       style: {
         position: "absolute",
         left: -26,
@@ -7133,7 +7218,82 @@ function FolderPage({
         verticalAlign: "top",
         lineHeight: 1.9
       }
-    }, price(packPrices.prosaude).c))))));
+    }, price(packPrices.prosaude).c))), l.id === "caldos" && packCal && /*#__PURE__*/React.createElement("div", {
+      style: {
+        position: "relative",
+        border: "2px solid " + YEL,
+        borderRadius: 18,
+        background: "rgba(255,255,255,0.75)",
+        padding: "12px 14px",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 10
+      }
+    }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+      style: {
+        position: "relative",
+        display: "inline-block",
+        padding: "2px 18px 6px",
+        transform: "rotate(-2deg)"
+      }
+    }, /*#__PURE__*/React.createElement(Brush, {
+      seed: 19,
+      pow: 4,
+      n: 80,
+      color: YEL
+    }), /*#__PURE__*/React.createElement("span", {
+      style: {
+        position: "relative",
+        fontFamily: HAND,
+        fontWeight: 700,
+        fontSize: 28,
+        color: DEEP
+      }
+    }, "Seu Pack Caldos")), /*#__PURE__*/React.createElement("div", {
+      style: {
+        fontSize: 12.5,
+        fontWeight: 700,
+        color: OLIVE,
+        marginTop: 6
+      }
+    }, PACK_SIZE, " CALDOS \xC0 SUA ESCOLHA")), /*#__PURE__*/React.createElement("div", {
+      style: {
+        position: "relative",
+        padding: "8px 26px 10px 20px",
+        color: "#fff",
+        transform: "rotate(-2deg)",
+        flexShrink: 0
+      }
+    }, /*#__PURE__*/React.createElement(Brush, {
+      seed: 27,
+      pow: 3.2,
+      n: 90,
+      color: "#a8541a"
+    }), /*#__PURE__*/React.createElement("span", {
+      style: {
+        position: "relative",
+        fontWeight: 800,
+        fontSize: 18,
+        verticalAlign: "top",
+        lineHeight: 2
+      }
+    }, "R$ "), /*#__PURE__*/React.createElement("span", {
+      style: {
+        position: "relative",
+        fontWeight: 800,
+        fontSize: 44,
+        lineHeight: 1
+      }
+    }, price(packPrices.caldos).r), /*#__PURE__*/React.createElement("span", {
+      style: {
+        position: "relative",
+        fontWeight: 800,
+        fontSize: 20,
+        verticalAlign: "top",
+        lineHeight: 1.9
+      }
+    }, price(packPrices.caldos).c))))));
   }), /*#__PURE__*/React.createElement("div", {
     style: {
       position: "relative",
@@ -10820,6 +10980,7 @@ function Storefront({
   const [cart, setCart] = useState({});
   const [line, setLine] = useState("todas");
   const [mode, setMode] = useState("avulso");
+  const [packN, setPackN] = useState(1);
   const pk = PACKS.find(x => x.id === mode);
   const [selectedClient, setSelectedClient] = useState("");
   const activeMeals = meals.filter(m => m.active);
@@ -10831,7 +10992,7 @@ function Storefront({
     meal: meals.find(m => m.id === id),
     qty: q
   }));
-  const total = pk ? packPrices[pk.id] : cartItems.reduce((s, i) => s + i.meal.price * i.qty, 0);
+  const total = pk ? packPrices[pk.id] * packN : cartItems.reduce((s, i) => s + i.meal.price * i.qty, 0);
   const meetsMin = pk ? distinctTypes === PACK_SIZE && totalQty === PACK_SIZE : totalQty >= MIN_QTY;
   const atMaxTypes = pk ? distinctTypes >= PACK_SIZE : distinctTypes >= MAX_TYPES;
   const filters = [{
@@ -10873,6 +11034,7 @@ function Storefront({
   };
   const changeMode = v => {
     setMode(v);
+    setPackN(1);
     setCart({});
     setLine("todas");
   };
@@ -10890,15 +11052,16 @@ function Storefront({
       source: "painel",
       payment: "Não Pago",
       date: todayISO(),
-      kind: pk ? pk.name : "Monte o seu",
+      kind: pk ? pk.name + (packN > 1 ? " ×" + packN : "") : "Monte o seu",
       items: cartItems.map(i => ({
         name: i.meal.name,
-        qty: i.qty
+        qty: pk ? packN : i.qty
       })),
       total,
       status: "Pendente"
     });
     setCart({});
+    setPackN(1);
     showToast("Pedido enviado para produção!");
   };
   return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(SectionTitle, {
@@ -11125,7 +11288,53 @@ function Storefront({
       gap: 10,
       marginBottom: 14
     }
-  }, cartItems.map(i => /*#__PURE__*/React.createElement("div", {
+  }, pk && cartItems.length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      gap: 10,
+      fontSize: 12.5,
+      background: "#f6f8f2",
+      borderRadius: 10,
+      padding: "8px 10px"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontWeight: 700
+    }
+  }, "Quantos packs iguais?"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: () => setPackN(n => Math.max(1, n - 1)),
+    style: stepBtn
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "minus",
+    size: 13
+  })), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontWeight: 700,
+      minWidth: 14,
+      textAlign: "center"
+    }
+  }, packN), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: () => setPackN(n => Math.min(10, n + 1)),
+    style: {
+      ...stepBtn,
+      background: "#1a4d2e",
+      color: "#fff",
+      borderColor: "#1a4d2e"
+    }
+  }, /*#__PURE__*/React.createElement(Icon, {
+    name: "plus",
+    size: 13
+  })))), cartItems.map(i => /*#__PURE__*/React.createElement("div", {
     key: i.meal.id,
     style: {
       display: "flex",
@@ -11133,7 +11342,7 @@ function Storefront({
       gap: 10,
       fontSize: 12.5
     }
-  }, /*#__PURE__*/React.createElement("span", null, i.qty, "\xD7 ", i.meal.name), /*#__PURE__*/React.createElement("span", {
+  }, /*#__PURE__*/React.createElement("span", null, pk ? packN : i.qty, "\xD7 ", i.meal.name), !pk && /*#__PURE__*/React.createElement("span", {
     style: {
       fontWeight: 700,
       whiteSpace: "nowrap"
