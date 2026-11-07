@@ -7640,6 +7640,78 @@ function MenuPricing({
 
 /* ============================== CADASTRO DE REFEICOES (Nutricionista) ============================== */
 
+/* Rascunho de ficha técnica: ingredientes pelo nome da refeição (ou pelos ingredientes cadastrados), proteína = 100 g,
+   demais quantidades copiadas das fichas que a pessoa já preencheu. O que não der para saber fica 0 para ser preenchido. */
+const plain = n => String(n || "").trim().toLowerCase().replace(/\s+/g, " ").normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+const SPEC_RULES = [[/pur[eê] misto/, ["Frango", "Purê de batata-doce", "Mandioquinha", "Brócolis"]], [/^escondidinho de frango/, ["Frango", "Purê"]], [/^escondidinho de carne/, ["Carne", "Purê"]], [/^escondidinho de pernil/, ["Pernil", "Purê"]], [/^file de frango grelhado/, ["Filé de frango", "Purê de abóbora", "Tomate-cereja"]], [/^carne moida com espaguete de abobrinha/, ["Carne moída", "Espaguete de abobrinha", "Cenoura"]], [/^carne moida/, ["Carne moída", "Legumes salteados"]], [/^tilapia/, ["Filé de tilápia", "Purê de abóbora", "Tomate-cereja"]], [/^picadinho/, ["Picadinho de carne", "Couve-flor"]], [/^arroz 7 graos/, ["Mignon suíno", "Arroz 7 grãos", "Creme de espinafre"]], [/^frango (c\/|com) .*legumes/, ["Frango", "Legumes salteados", "Arroz branco"]], [/^carne de panela/, ["Carne de panela", "Batata", "Arroz branco"]], [/^picanha/, ["Picanha suína", "Arroz de brócolis", "Purê"]], [/^fricasse/, ["Frango", "Molho de fricassê"]], [/^file de coxa/, ["Filé de coxa", "Espaguete", "Molho sugo"]], [/^nhoque/, ["Carne moída", "Nhoque", "Molho bolonhesa"]], [/^almondegas/, ["Almôndegas", "Espaguete", "Molho sugo"]], [/^strogonoff de carne/, ["Carne", "Molho de strogonoff"]], [/^strogonoff de frango/, ["Frango", "Molho de strogonoff"]], [/^kibe/, ["Carne (kibe)", "Cream cheese", "Holmus"]]];
+const isProtein = n => /(frango|carne|picanha|pernil|coxa|tilapia|mignon|almondega|picadinho|kibe|peixe|suin)/.test(plain(n)) && !/(molho|creme|pure|arroz|espaguete|legume|nhoque)/.test(plain(n));
+function parseQtyText(t) {
+  const m = String(t || "").toLowerCase().replace(",", ".").match(/(\d+(?:\.\d+)?)\s*(kg|gr|g|ml|l|unid|un)?/);
+  if (!m) return null;
+  const u = {
+    gr: "g",
+    unid: "un"
+  }[m[2]] || m[2] || "g";
+  return {
+    qty: parseFloat(m[1]),
+    unit: UNITS[u] ? u : "g"
+  };
+}
+function draftSpecs(meals, specs) {
+  const ref = {}; // nome normalizado -> { "qty|unit": contagem }
+  meals.forEach(m => (specs[m.id] || []).forEach(i => {
+    if (i.name && i.qty > 0) {
+      const k = plain(i.name);
+      const v = i.qty + "|" + (i.unit || "g");
+      ref[k] = ref[k] || {};
+      ref[k][v] = (ref[k][v] || 0) + 1;
+    }
+  }));
+  const lookup = name => {
+    const k = plain(name);
+    const hit = ref[k];
+    if (!hit) return null;
+    const best = Object.entries(hit).sort((a, b) => b[1] - a[1])[0][0].split("|");
+    return {
+      qty: parseFloat(best[0]),
+      unit: best[1]
+    };
+  };
+  const out = {};
+  meals.forEach(m => {
+    if ((specs[m.id] || []).length) return;
+    let comp = null;
+    if (m.ingredients && m.ingredients.some(i => i.name)) comp = m.ingredients.filter(i => i.name).map(i => ({
+      name: i.name,
+      parsed: parseQtyText(i.qty)
+    }));else {
+      const r = SPEC_RULES.find(x => x[0].test(plain(m.name)));
+      if (r) comp = r[1].map(n => ({
+        name: n,
+        parsed: null
+      }));
+    }
+    if (!comp || !comp.length) return;
+    let protDone = false;
+    out[m.id] = comp.map(c => {
+      if (!protDone && isProtein(c.name)) {
+        protDone = true;
+        return {
+          name: c.name,
+          qty: 100,
+          unit: "g"
+        };
+      }
+      const q = c.parsed || lookup(c.name);
+      return {
+        name: c.name,
+        qty: q ? q.qty : 0,
+        unit: q ? q.unit : "g"
+      };
+    });
+  });
+  return out;
+}
 function MealRegistry({
   meals,
   setMeals,
@@ -7649,6 +7721,27 @@ function MealRegistry({
   showToast
 }) {
   const [specFor, setSpecFor] = useState(null);
+  const [fillAsk, setFillAsk] = useState(null);
+  const fillTimer = useRef(null);
+  const autoFill = () => {
+    const d = draftSpecs(meals, specs);
+    const ids = Object.keys(d);
+    if (!ids.length) {
+      showToast("Nenhuma refeição sem ficha técnica que eu consiga preencher.");
+      return;
+    }
+    if (fillAsk !== ids.length) {
+      setFillAsk(ids.length);
+      clearTimeout(fillTimer.current);
+      fillTimer.current = setTimeout(() => setFillAsk(null), 6000);
+      return;
+    }
+    clearTimeout(fillTimer.current);
+    setFillAsk(null);
+    ids.forEach(id => saveSpec(id, d[id]));
+    const zeros = ids.reduce((t, id) => t + d[id].filter(x => x.qty === 0).length, 0);
+    showToast("Rascunho criado em " + ids.length + " refeições. " + (zeros ? zeros + " ingredientes ficaram com quantidade 0 para você preencher." : "Confira as quantidades."));
+  };
   const [photoBusy, setPhotoBusy] = useState(null);
   const changePhoto = async (m, file) => {
     setPhotoBusy(m.id);
@@ -7795,14 +7888,27 @@ function MealRegistry({
   return /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement(SectionTitle, {
     title: "Cadastro de Refei\xE7\xF5es",
     subtitle: "A nutricionista registra os ingredientes e a categoria de cada refei\xE7\xE3o.",
-    action: /*#__PURE__*/React.createElement("button", {
+    action: /*#__PURE__*/React.createElement("div", {
+      style: {
+        display: "flex",
+        gap: 8,
+        flexWrap: "wrap"
+      }
+    }, /*#__PURE__*/React.createElement("button", {
+      type: "button",
+      style: fillAsk ? {
+        ...btnPrimary,
+        background: "#e8833a"
+      } : btnGhost,
+      onClick: autoFill
+    }, fillAsk ? "Confirmar: preencher " + fillAsk + " fichas" : "Preencher fichas vazias"), /*#__PURE__*/React.createElement("button", {
       type: "button",
       style: btnPrimary,
       onClick: startNew
     }, /*#__PURE__*/React.createElement(Icon, {
       name: "plus",
       size: 15
-    }), " Nova refei\xE7\xE3o")
+    }), " Nova refei\xE7\xE3o"))
   }), specFor && /*#__PURE__*/React.createElement(SpecModal, {
     meal: specFor,
     items: specs[specFor.id] || [],
@@ -8556,6 +8662,61 @@ function KitchenBoard({
 }) {
   const [sel, setSel] = useState(["Encomendado", "Em preparo"]);
   const [open, setOpen] = useState({});
+  // mantém a tela ligada enquanto o painel da cozinha está aberto (Screen Wake Lock)
+  const [keepOn, setKeepOn] = useState(() => {
+    try {
+      return localStorage.getItem("f360_kitchen_wake") !== "0";
+    } catch (e) {
+      return true;
+    }
+  });
+  const [wakeState, setWakeState] = useState("off");
+  useEffect(() => {
+    if (!keepOn) {
+      setWakeState("off");
+      return undefined;
+    }
+    if (!("wakeLock" in navigator)) {
+      setWakeState("unsupported");
+      return undefined;
+    }
+    let lock = null,
+      alive = true;
+    const ask = async () => {
+      try {
+        lock = await navigator.wakeLock.request("screen");
+        if (!alive) {
+          lock.release();
+          return;
+        }
+        setWakeState("on");
+        lock.addEventListener("release", () => {
+          if (alive) setWakeState("off");
+        });
+      } catch (e) {
+        if (alive) setWakeState("error");
+      }
+    };
+    const onVis = () => {
+      if (document.visibilityState === "visible" && (!lock || lock.released)) ask();
+    };
+    ask();
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      alive = false;
+      document.removeEventListener("visibilitychange", onVis);
+      try {
+        lock && lock.release();
+      } catch (e) {}
+    };
+  }, [keepOn]);
+  const toggleWake = () => setKeepOn(v => {
+    const n = !v;
+    try {
+      localStorage.setItem("f360_kitchen_wake", n ? "1" : "0");
+    } catch (e) {}
+    return n;
+  });
   const [done, setDone] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem("f360_kitchen_done") || "{}") || {};
@@ -8674,7 +8835,22 @@ function KitchenBoard({
       background: sel.includes(st) ? statusColor[st] : "#fff",
       color: sel.includes(st) ? "#fff" : "#526355"
     }
-  }, st, " (", orders.filter(o => o.status === st).length, ")"))), /*#__PURE__*/React.createElement("div", {
+  }, st, " (", orders.filter(o => o.status === st).length, ")")), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: toggleWake,
+    title: "Evita que a tela do celular apague enquanto este painel estiver aberto",
+    style: {
+      marginLeft: "auto",
+      padding: "8px 14px",
+      borderRadius: 999,
+      fontSize: 13,
+      fontWeight: 700,
+      cursor: "pointer",
+      border: "1.5px solid " + (wakeState === "on" ? "#4a9a5a" : "#dde3d8"),
+      background: wakeState === "on" ? "#eaf3ea" : "#fff",
+      color: wakeState === "on" ? "#1a4d2e" : "#526355"
+    }
+  }, wakeState === "on" ? "Tela ligada ✓" : wakeState === "unsupported" ? "Tela: sem suporte neste navegador" : wakeState === "error" ? "Tela: toque para tentar de novo" : "Manter tela ligada")), /*#__PURE__*/React.createElement("div", {
     style: {
       ...card,
       marginBottom: 18
